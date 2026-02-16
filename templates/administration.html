@@ -18,6 +18,9 @@
     <button id="physicalCountBtn" class="btn btn-secondary" onclick="showSection('physical-count')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
         📋 Physical Inventory Count
     </button>
+    <button id="importDataBtnTab" class="btn btn-secondary" onclick="showSection('import-data')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
+        📥 Import Data
+    </button>
     <button id="otherSettingsBtn" class="btn btn-secondary" onclick="showSection('other')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
         ⚙️ Other Settings
     </button>
@@ -274,21 +277,22 @@
         </div>
     </div>
     
-    <!-- Import Data (for migrating local data to deployed app) -->
-    <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #2196f3;">
-        <h3 style="margin-bottom: 15px; color: #1e3a5f; font-size: 18px;">📥 Import Data from Local Backup</h3>
-        <p style="color: #666; margin-bottom: 15px;">Upload a data export file from your local app to load your markets, companies, items, sales, and more into this deployed instance.</p>
-        <ol style="color: #666; margin-bottom: 15px; padding-left: 20px;">
-            <li>On your local computer, run: <code style="background:#e0e0e0;padding:2px 6px;border-radius:4px;">python scripts/export_data.py</code></li>
-            <li>This creates <code style="background:#e0e0e0;padding:2px 6px;border-radius:4px;">data_export.json</code></li>
-            <li>Upload that file below</li>
-        </ol>
-        <form id="importDataForm">
-            <input type="file" id="importDataFile" accept=".json" required style="margin-bottom: 10px;">
-            <button type="submit" class="btn btn-primary" id="importDataBtn">Import Data</button>
-        </form>
-        <p id="importDataMessage" style="margin-top: 10px; font-weight: 600;"></p>
-    </div>
+</div>
+
+<!-- Import Data Section (standalone) -->
+<div id="importDataSection" style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: none;">
+    <h2 style="margin-bottom: 20px; color: #1e3a5f;">📥 Import Data from Local Backup</h2>
+    <p style="color: #666; margin-bottom: 20px;">Upload a data export file from your local app to load your markets, companies, items, sales, and more into this deployed instance.</p>
+    <ol style="color: #666; margin-bottom: 20px; padding-left: 20px; line-height: 1.8;">
+        <li>On your local computer, run: <code style="background:#e0e0e0;padding:2px 8px;border-radius:4px;">python scripts/export_data.py</code></li>
+        <li>This creates <code style="background:#e0e0e0;padding:2px 8px;border-radius:4px;">data_export.json</code> in your project folder</li>
+        <li>Upload that file below</li>
+    </ol>
+    <form id="importDataForm">
+        <input type="file" id="importDataFile" accept=".json" required style="margin-bottom: 15px; display: block;">
+        <button type="submit" class="btn btn-primary" id="importDataBtn">Import Data</button>
+    </form>
+    <p id="importDataMessage" style="margin-top: 15px; font-weight: 600;"></p>
 </div>
 
 <script>
@@ -301,11 +305,13 @@ function showSection(section) {
     document.getElementById('inventoryAdjustmentsSection').style.display = 'none';
     document.getElementById('physicalCountSection').style.display = 'none';
     document.getElementById('otherSettingsSection').style.display = 'none';
+    document.getElementById('importDataSection').style.display = 'none';
     
     // Reset button styles
     document.getElementById('safeAdjustmentsBtn').className = 'btn btn-secondary';
     document.getElementById('inventoryAdjustmentsBtn').className = 'btn btn-secondary';
     document.getElementById('physicalCountBtn').className = 'btn btn-secondary';
+    document.getElementById('importDataBtnTab').className = 'btn btn-secondary';
     document.getElementById('otherSettingsBtn').className = 'btn btn-secondary';
     
     // Show selected section
@@ -318,6 +324,9 @@ function showSection(section) {
     } else if (section === 'physical-count') {
         document.getElementById('physicalCountSection').style.display = 'block';
         document.getElementById('physicalCountBtn').className = 'btn btn-primary';
+    } else if (section === 'import-data') {
+        document.getElementById('importDataSection').style.display = 'block';
+        document.getElementById('importDataBtnTab').className = 'btn btn-primary';
     } else if (section === 'other') {
         document.getElementById('otherSettingsSection').style.display = 'block';
         document.getElementById('otherSettingsBtn').className = 'btn btn-primary';
