@@ -35,6 +35,15 @@ with app.app_context():
         )
         db.session.add(admin)
         db.session.commit()
+    # Create default market if none exists (for fresh deploys)
+    if not Market.query.first():
+        default_market = Market(
+            name='Default Market',
+            address='',
+            base_currency='FCFA'
+        )
+        db.session.add(default_market)
+        db.session.commit()
 
 # Routes
 @app.route('/')
