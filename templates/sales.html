@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block title %}Sales - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Sales</h1>
+    <div class="action-buttons">
+        <button class="btn btn-danger" id="deleteSelectedBtn" onclick="deleteSelectedSales()" style="display: none;">🗑️ Delete Selected</button>
+        <button id="salesImportBtn" class="btn btn-secondary" type="button" onclick="openSalesImportModal()">Import from Excel</button>
+        <button class="btn btn-primary" type="button" onclick="openAddSaleModal()">+ Add Sale</button>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Start Date</label>
+            <input type="date" id="filterStartDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>End Date</label>
+            <input type="date" id="filterEndDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>Customer</label>
+            <select id="filterCustomer" class="form-control">
+                <option value="">All Customers</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Supplier</label>
+            <select id="filterSupplier" class="form-control">
+                <option value="">All Suppliers</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
+            <button class="btn btn-secondary" onclick="clearFilters()">Clear</button>
+        </div>
+    </div>
+</div>
+
+<!-- Sales Table -->
+<div class="table-container">
+    <table id="salesTable">
+        <thead>
+            <tr>
+                <th style="width: 50px;">
+                    <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()" title="Select All">
+                </th>
+                <th class="sortable">Invoice No</th>
+                <th class="sortable">Date</th>
+                <th class="sortable">Customer</th>
+                <th class="sortable">Supplier</th>
+                <th class="sortable">Total Amount</th>
+                <th class="sortable">Paid Amount</th>
+                <th class="sortable">Balance</th>
+                <th>Payment Type</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="salesTableBody">
+            <tr>
+                <td colspan="11" class="empty-state">
+                    <div class="spinner"></div>
+                    <div>Loading sales...</div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Add/Edit Sale Modal -->
+<div id="saleModal" class="modal">
+    <div class="modal-content" style="max-width: 800px;">
+        <span class="close" onclick="closeSaleModal()">&times;</span>
+        <h2 id="modalTitle">Add Sale</h2>
+        <form id="saleForm">
+            <input type="hidden" id="saleId">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Date *</label>
+                    <input type="date" id="saleDate" required>
+                </div>
+                <div class="form-group">
+                    <label>Customer *</label>
+                    <select id="saleCustomer" required>
+                        <option value="">Select Customer</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Supplier *</label>
+                <select id="saleSupplier" required onchange="loadSupplierItems()">
+                    <option value="">Select Supplier</option>
+                </select>
+                <small style="color: #666;">Select supplier to view their available stock (Required)</small>
+            </div>
+            <div class="form-group">
+                <label>Items *</label>
+                <div id="saleItems">
+                    <div class="sale-item-row" style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 10px; margin-bottom: 10px;">
+                        <select class="item-select" required>
+                            <option value="">Select Item</option>
+                        </select>
+                        <input type="number" class="item-quantity" placeholder="Qty" step="0.01" required>
+                        <input type="number" class="item-price" placeholder="Unit Price" step="0.01" required>
+                        <input type="text" class="item-total" placeholder="Total" readonly>
+                        <button type="button" class="btn btn-danger btn-sm" onclick="removeItemRow(this)">×</button>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-secondary" onclick="addItemRow()">+ Add Item</button>
+            </div>
+            <div class="form-group">
+                <label>Total Amount</label>
+                <input type="text" id="saleTotal" readonly style="font-size: 18px; font-weight: 600;">
+            </div>
+            <div class="form-group">
+                <label>Paid Amount</label>
+                <input type="number" id="salePaidAmount" step="0.01" min="0" style="font-size: 16px;">
+                <small style="color: #666;">Enter the amount collected/paid for this sale</small>
+            </div>
+            <div class="form-group">
+                <label>Balance</label>
+                <input type="text" id="saleBalance" readonly style="font-size: 16px; font-weight: 600;">
+            </div>
+            <div class="form-group">
+                <label>Notes</label>
+                <textarea id="saleNotes" rows="3"></textarea>
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Save Sale</button>
+                <button type="button" class="btn btn-secondary" onclick="closeSaleModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Import Sales Modal -->
+<div id="salesImportModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeSalesImportModal()">&times;</span>
+        <h2>Import Sales from Excel</h2>
+        <p style="color:#666;margin-bottom:10px;">Required columns: Date, Customer, Supplier, ItemCode, Quantity, UnitPrice<br>Optional: Notes</p>
+        <form id="importSalesForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>Excel File *</label>
+                <input type="file" id="salesExcelFile" accept=".xlsx,.xls" required>
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Import</button>
+                <button type="button" class="btn btn-secondary" onclick="closeSalesImportModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Sale Invoice Modal -->
+<div id="saleInvoiceModal" class="modal">
+    <div class="modal-content" style="max-width: 900px;">
+        <span class="close" onclick="closeSaleInvoiceModal()">&times;</span>
+        <div id="invoiceContent" style="background: white; padding: 30px; border-radius: 5px;">
+            <!-- Invoice content will be loaded here -->
+        </div>
+        <div class="action-buttons" style="margin-top: 20px; text-align: center;">
+            <button type="button" class="btn btn-primary" onclick="printInvoice()">Print</button>
+            <button type="button" class="btn btn-secondary" onclick="closeSaleInvoiceModal()">Close</button>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/sales.js') }}"></script>
+{% endblock %}
+

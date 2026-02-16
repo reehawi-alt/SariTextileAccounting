@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block title %}Items - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Items</h1>
+    <div class="action-buttons">
+        <button class="btn btn-danger" id="removeSelectedBtn" onclick="removeSelectedItems()" style="display: none;">🗑️ Remove Selected</button>
+        <button class="btn btn-secondary" onclick="exportItems()">📊 Export to Excel</button>
+        <button class="btn btn-secondary" onclick="openImportModal()">Import from Excel</button>
+        <button class="btn btn-primary" onclick="openAddItemModal()">+ Add Item</button>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Filter by Name/Code</label>
+            <input type="text" id="filterName" class="form-control" placeholder="Search by item name or code..." oninput="applyFilters()">
+        </div>
+        <div class="form-group">
+            <label>Filter by Supplier</label>
+            <select id="filterSupplier" class="form-control" onchange="applyFilters()">
+                <option value="">ALL - Show All Stock</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <button class="btn btn-secondary" onclick="clearFilters()">Clear Filters</button>
+        </div>
+    </div>
+</div>
+
+<!-- Counts -->
+<div class="filters" style="margin-top: 10px;">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Total Items (unique)</label>
+            <div id="totalItemsCount" style="font-weight: 700; font-size: 16px;">0</div>
+        </div>
+        <div class="form-group">
+            <label>Selected Items</label>
+            <div id="selectedItemsCount" style="font-weight: 700; font-size: 16px;">0</div>
+        </div>
+    </div>
+</div>
+
+<div class="table-container">
+    <table id="itemsTable">
+        <thead>
+            <tr>
+                <th style="width: 50px;">
+                    <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()" title="Select All">
+                </th>
+                <th class="sortable">Code</th>
+                <th class="sortable">Name</th>
+                <th class="sortable">Supplier</th>
+                <th class="sortable">Weight</th>
+                <th>Grade</th>
+                <th>Category 1</th>
+                <th>Category 2</th>
+                <th class="sortable">Total Purchases</th>
+                <th class="sortable">Total Sales</th>
+                <th class="sortable">Available Qty</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="itemsTableBody">
+            <tr><td colspan="12" class="empty-state">Loading...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Add/Edit Item Modal -->
+<div id="itemModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeItemModal()">&times;</span>
+        <h2 id="itemModalTitle">Add Item</h2>
+        <form id="itemForm">
+            <input type="hidden" id="itemId">
+            <div class="form-group">
+                <label>Code *</label>
+                <input type="text" id="itemCode" required>
+            </div>
+            <div class="form-group">
+                <label>Name *</label>
+                <input type="text" id="itemName" required>
+            </div>
+            <div class="form-group">
+                <label>Weight *</label>
+                <input type="number" id="itemWeight" step="0.01" required>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Grade</label>
+                    <input type="text" id="itemGrade">
+                </div>
+                <div class="form-group">
+                    <label>Category 1</label>
+                    <input type="text" id="itemCategory1">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Category 2</label>
+                <input type="text" id="itemCategory2">
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Save</button>
+                <button type="button" class="btn btn-secondary" onclick="closeItemModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Import Modal -->
+<div id="importModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeImportModal()">&times;</span>
+        <h2>Import Items from Excel</h2>
+        <form id="importForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>Excel File *</label>
+                <input type="file" id="excelFile" accept=".xlsx,.xls" required>
+                <small style="color: #666;">Required columns: Code, Name, Weight (optional: Grade, Category1, Category2)</small>
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Import</button>
+                <button type="button" class="btn btn-secondary" onclick="closeImportModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/items.js') }}"></script>
+{% endblock %}
+

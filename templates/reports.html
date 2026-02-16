@@ -1,0 +1,552 @@
+{% extends "base.html" %}
+
+{% block title %}Reports - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Reports</h1>
+</div>
+
+<!-- Category Navigation Buttons -->
+<div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
+    <button id="safeReportsBtn" class="btn btn-primary" onclick="showReportCategory('safe')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
+        💰 Safe Reports
+    </button>
+    <button id="financialReportsBtn" class="btn btn-secondary" onclick="showReportCategory('financial')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
+        💵 Financial Reports
+    </button>
+    <button id="inventoryReportsBtn" class="btn btn-secondary" onclick="showReportCategory('inventory')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
+        📦 Inventory Reports
+    </button>
+    <button id="purchaseReportsBtn" class="btn btn-secondary" onclick="showReportCategory('purchase')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
+        📋 Purchase Reports
+    </button>
+</div>
+
+<!-- Safe Reports Section -->
+<div id="safeReportsSection" style="display: block;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showSafeReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Safe Movement</h3>
+            <p style="color: #666;">Cash flow and safe balance report</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="window.location.href='/reports/safe-statement'">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Safe Statement</h3>
+            <p style="color: #666;">Daily IN/OUT totals with manual real balance entry</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showCollectedMoneyReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Collected Money</h3>
+            <p style="color: #666;">Money collected from sales, payments, and loans</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showSafeOutReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Safe Out Report</h3>
+            <p style="color: #666;">All money paid out (payments and expenses)</p>
+        </div>
+    </div>
+</div>
+
+<!-- Financial Reports Section -->
+<div id="financialReportsSection" style="display: none;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showProfitLossReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Profit & Loss</h3>
+            <p style="color: #666;">View profit and loss analysis by item and period</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showReceivablesReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Customer Receivables</h3>
+            <p style="color: #666;">Outstanding customer balances</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showPayablesReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Supplier Payables</h3>
+            <p style="color: #666;">Outstanding supplier balances</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showSalesReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Sales Report</h3>
+            <p style="color: #666;">Detailed sales transactions for selected period</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showVirtualPurchaseProfitReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Virtual Purchase Profit</h3>
+            <p style="color: #666;">Calculate profit percentage for virtual purchased items</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showAverageSalePriceReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Average Sale Price</h3>
+            <p style="color: #666;">Average sale price for all items with calculation details</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showAverageLastNSalesReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Average of Last 10 Sales</h3>
+            <p style="color: #666;">Average sale price from last 10 (or 9, 8, 7...) most recent sales per item</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showDailySalesReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Daily Sales Invoice</h3>
+            <p style="color: #666;">Daily sales grouped into one invoice per day with supplier and customer details</p>
+        </div>
+    </div>
+</div>
+
+<!-- Inventory Reports Section -->
+<div id="inventoryReportsSection" style="display: none;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showInventoryReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Inventory Movement</h3>
+            <p style="color: #666;">Stock movement history (purchases and sales)</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showInventoryStockReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Inventory Stock</h3>
+            <p style="color: #666;">Current stock levels and quantities</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showInventorySnapshotReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Inventory Snapshot</h3>
+            <p style="color: #666;">Stock levels on a specific date</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showItemStatementReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Item Statement</h3>
+            <p style="color: #666;">Item-level IN/OUT transactions grouped by date</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showStockValueDetailsReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Stock Value Details</h3>
+            <p style="color: #666;">Detailed breakdown of stock value calculations with COG</p>
+        </div>
+    </div>
+</div>
+
+<!-- Purchase Reports Section -->
+<div id="purchaseReportsSection" style="display: none;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showContainerReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Container Report</h3>
+            <p style="color: #666;">Detailed container purchase analysis with COG</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showLastPurchasePriceReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Last Purchase Price</h3>
+            <p style="color: #666;">Most recent purchase unit price for each item</p>
+        </div>
+    </div>
+</div>
+
+<!-- Report Display Area -->
+<div id="reportArea" style="display: none; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2 id="reportTitle" style="color: #1e3a5f;"></h2>
+        <div class="action-buttons">
+            <button class="btn btn-primary" onclick="printReport()">🖨️ Print</button>
+            <button class="btn btn-secondary" onclick="exportReportToExcel()">📊 Export to Excel</button>
+            <button class="btn btn-secondary" id="exportPDFBtn" onclick="exportContainerReportToPDF()" style="display: none;">📄 Download PDF</button>
+            <button class="btn btn-secondary" onclick="closeReport()">Close</button>
+        </div>
+    </div>
+    
+    <!-- Filters -->
+    <div class="filters" id="reportFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="reportStartDate" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="reportEndDate" class="form-control">
+            </div>
+            <div class="form-group" id="safeReportTypeFilter" style="display: none;">
+                <label>Transaction Type</label>
+                <select id="reportTransactionType" class="form-control">
+                    <option value="All">All</option>
+                    <option value="In">In (Inflow)</option>
+                    <option value="Out">Out (Outflow)</option>
+                </select>
+            </div>
+            <div class="form-group" id="inventoryMovementTypeFilter" style="display: none;">
+                <label>Movement Type</label>
+                <select id="inventoryMovementType" class="form-control">
+                    <option value="both">Both (Purchases & Sales)</option>
+                    <option value="purchases">Purchases Only</option>
+                    <option value="sales">Sales Only</option>
+                </select>
+            </div>
+            <div class="form-group" id="inventoryItemFilter" style="display: none;">
+                <label>Item</label>
+                <select id="inventoryReportItem" class="form-control" onchange="loadInventoryReport()">
+                    <option value="">All Items</option>
+                </select>
+            </div>
+            <div class="form-group" id="profitLossItemFilter" style="display: none; position: relative;">
+                <label>Item</label>
+                <div class="searchable-select" id="profitLossItemWrapper" style="position: relative;">
+                    <input type="text" 
+                           id="profitLossItemSearch" 
+                           class="form-control" 
+                           placeholder="Search or select item..." 
+                           autocomplete="off"
+                           onfocus="showProfitLossItemDropdown()"
+                           oninput="filterProfitLossItems(this.value)"
+                           onclick="showProfitLossItemDropdown()">
+                    <input type="hidden" id="profitLossItem" value="">
+                    <div id="profitLossItemDropdown" class="searchable-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-secondary); border: 1px solid var(--border-color); border-top: none; max-height: 300px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px var(--shadow);">
+                        <div class="dropdown-item" onclick="selectProfitLossItem('', 'All Items')" style="padding: 10px; cursor: pointer; border-bottom: 1px solid var(--border-color);">All Items</div>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearReportFilters()">Clear</button>
+            </div>
+            <div class="form-group" id="collectedMoneyColumnSelector" style="display: none; position: relative;">
+                <button class="btn btn-secondary" onclick="toggleCollectedMoneyColumnSelector()" style="position: relative;">
+                    📊 Columns
+                    <span id="collectedMoneyColumnSelectorBadge" style="display: none; position: absolute; top: -5px; right: -5px; background: #f44336; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 18px; text-align: center;"></span>
+                </button>
+                <div id="collectedMoneyColumnSelectorDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 5px; background: white; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 1000; min-width: 220px; padding: 10px;">
+                    <div style="font-weight: 600; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #eee; color: #1e3a5f;">Select Columns</div>
+                    <div id="collectedMoneyColumnCheckboxes" style="max-height: 300px; overflow-y: auto;">
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="collected-money-column-checkbox" data-column="date" checked> Date
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="collected-money-column-checkbox" data-column="source_type" checked> Source Type
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="collected-money-column-checkbox" data-column="customer" checked> Customer/Source
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="collected-money-column-checkbox" data-column="invoice_number" checked> Invoice Number
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="collected-money-column-checkbox" data-column="description" checked> Description
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="collected-money-column-checkbox" data-column="amount" checked> Amount
+                        </label>
+                    </div>
+                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; display: flex; gap: 5px;">
+                        <button class="btn btn-secondary" onclick="selectAllCollectedMoneyColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Select All</button>
+                        <button class="btn btn-secondary" onclick="deselectAllCollectedMoneyColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Deselect All</button>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button class="btn btn-primary" onclick="applyCollectedMoneyColumnVisibility()" style="width: 100%; padding: 8px; font-size: 13px;">Apply</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Container Report Filters -->
+    <div class="filters" id="containerReportFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="containerReportSupplier" class="form-control" onchange="loadContainersForReport()">
+                    <option value="">Select Supplier</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Container</label>
+                <select id="containerReportContainer" class="form-control" onchange="loadReport()">
+                    <option value="">Select Container</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadReport()">Load Report</button>
+                <button class="btn btn-secondary" onclick="clearContainerReportFilters()">Clear</button>
+            </div>
+            <div class="form-group" style="position: relative;">
+                <button class="btn btn-secondary" onclick="toggleColumnSelector()" style="position: relative;">
+                    📊 Columns
+                    <span id="columnSelectorBadge" style="display: none; position: absolute; top: -5px; right: -5px; background: #f44336; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 18px; text-align: center;"></span>
+                </button>
+                <div id="columnSelectorDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 5px; background: white; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 1000; min-width: 220px; padding: 10px;">
+                    <div style="font-weight: 600; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #eee; color: #1e3a5f;">Select Columns</div>
+                    <div id="columnCheckboxes" style="max-height: 300px; overflow-y: auto;">
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="item_code" checked> Item Code
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="item_name" checked> Item Name
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="quantity" checked> Quantity
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="item_weight" checked> Item Weight
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="item_total_weight" checked> Item Total Weight
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="unit_price" checked> Unit Price
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="total_price" checked> Total Price
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="cog" checked> COG
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="total_cog" checked> Total COG
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="item_cost" checked> Item Cost
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="column-checkbox" data-column="item_total_cost" checked> Item Total Cost
+                        </label>
+                    </div>
+                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; display: flex; gap: 5px;">
+                        <button class="btn btn-secondary" onclick="selectAllColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Select All</button>
+                        <button class="btn btn-secondary" onclick="deselectAllColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Deselect All</button>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button class="btn btn-primary" onclick="applyColumnVisibility()" style="width: 100%; padding: 8px; font-size: 13px;">Apply</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Inventory Stock Filters -->
+    <div class="filters" id="inventoryStockFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="inventoryStockSupplier" class="form-control" onchange="loadInventoryStockReport()">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadInventoryStockReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearInventoryStockFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inventory Snapshot Filters -->
+    <div class="filters" id="inventorySnapshotFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Snapshot Date</label>
+                <input type="date" id="inventorySnapshotDate" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="inventorySnapshotSupplier" class="form-control" onchange="loadItemsForInventorySnapshot()">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Item</label>
+                <select id="inventorySnapshotItem" class="form-control">
+                    <option value="">All Items</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadInventorySnapshotReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearInventorySnapshotFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Item Statement Filters -->
+    <div class="filters" id="itemStatementFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="itemStatementSupplier" class="form-control" onchange="loadItemsForItemStatement()">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Item</label>
+                <div class="searchable-select" style="position: relative;">
+                    <input type="text"
+                           id="itemStatementItemSearch"
+                           class="form-control"
+                           list="itemStatementItemList"
+                           placeholder="All Items"
+                           oninput="handleItemStatementItemInput()">
+                    <datalist id="itemStatementItemList"></datalist>
+                    <input type="hidden" id="itemStatementItem" value="">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="itemStatementStartDate" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="itemStatementEndDate" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Transaction Type</label>
+                <select id="itemStatementType" class="form-control">
+                    <option value="All">All (IN & OUT)</option>
+                    <option value="IN">IN Only</option>
+                    <option value="OUT">OUT Only</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadItemStatementReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearItemStatementFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Stock Value Details Filters -->
+    <div class="filters" id="stockValueDetailsFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group" style="position: relative;">
+                <label>Item</label>
+                <div class="searchable-select" id="stockValueDetailsItemWrapper" style="position: relative;">
+                    <input type="text" 
+                           id="stockValueDetailsItemSearch" 
+                           class="form-control" 
+                           placeholder="Search or select item..." 
+                           autocomplete="off"
+                           onfocus="showStockValueDetailsDropdown()"
+                           oninput="filterStockValueDetailsItems(this.value)"
+                           onclick="showStockValueDetailsDropdown()">
+                    <input type="hidden" id="stockValueDetailsItem" value="">
+                    <div id="stockValueDetailsItemDropdown" class="searchable-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-secondary); border: 1px solid var(--border-color); border-top: none; max-height: 300px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px var(--shadow);">
+                        <div class="dropdown-item" onclick="selectStockValueDetailsItem('', 'All Items')" style="padding: 10px; cursor: pointer; border-bottom: 1px solid var(--border-color);">All Items</div>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadStockValueDetailsReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearStockValueDetailsFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Virtual Purchase Profit Filters -->
+    <div class="filters" id="virtualPurchaseProfitFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Excel File</label>
+                <input type="file" id="virtualPurchaseProfitFile" accept=".xlsx,.xls" class="form-control">
+                <small style="color: #666; display: block; margin-top: 5px;">
+                    Required columns: ItemCode, Quantity, Price, Currency, ExchangeRate
+                </small>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadVirtualPurchaseProfitReport()">Calculate Profit</button>
+                <button class="btn btn-secondary" onclick="clearVirtualPurchaseProfitFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Last Purchase Price Filters -->
+    <div class="filters" id="lastPurchasePriceFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="lastPurchasePriceSupplier" class="form-control">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Item</label>
+                <select id="lastPurchasePriceItem" class="form-control">
+                    <option value="">All Items</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadLastPurchasePriceReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearLastPurchasePriceFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Average of Last N Sales Filters -->
+    <div class="filters" id="averageLastNSalesFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="averageLastNSalesSupplier" class="form-control">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Item</label>
+                <select id="averageLastNSalesItem" class="form-control">
+                    <option value="">All Items</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadAverageLastNSalesReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearAverageLastNSalesFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Average Sale Price Filters -->
+    <div class="filters" id="averageSalePriceFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Start Date</label>
+                <input type="date" id="averageSalePriceStartDate" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>End Date</label>
+                <input type="date" id="averageSalePriceEndDate" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="averageSalePriceSupplier" class="form-control">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Customer</label>
+                <select id="averageSalePriceCustomer" class="form-control">
+                    <option value="">All Customers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Item</label>
+                <select id="averageSalePriceItem" class="form-control">
+                    <option value="">All Items</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadAverageSalePriceReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearAverageSalePriceFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
+    <div id="reportContent">
+        <div class="spinner"></div>
+    </div>
+</div>
+
+<script>
+function showReportCategory(category) {
+    // Hide all sections
+    document.getElementById('safeReportsSection').style.display = 'none';
+    document.getElementById('financialReportsSection').style.display = 'none';
+    document.getElementById('inventoryReportsSection').style.display = 'none';
+    document.getElementById('purchaseReportsSection').style.display = 'none';
+    
+    // Reset button styles
+    document.getElementById('safeReportsBtn').className = 'btn btn-secondary';
+    document.getElementById('financialReportsBtn').className = 'btn btn-secondary';
+    document.getElementById('inventoryReportsBtn').className = 'btn btn-secondary';
+    document.getElementById('purchaseReportsBtn').className = 'btn btn-secondary';
+    
+    // Show selected section and update button style
+    if (category === 'safe') {
+        document.getElementById('safeReportsSection').style.display = 'block';
+        document.getElementById('safeReportsBtn').className = 'btn btn-primary';
+    } else if (category === 'financial') {
+        document.getElementById('financialReportsSection').style.display = 'block';
+        document.getElementById('financialReportsBtn').className = 'btn btn-primary';
+    } else if (category === 'inventory') {
+        document.getElementById('inventoryReportsSection').style.display = 'block';
+        document.getElementById('inventoryReportsBtn').className = 'btn btn-primary';
+    } else if (category === 'purchase') {
+        document.getElementById('purchaseReportsSection').style.display = 'block';
+        document.getElementById('purchaseReportsBtn').className = 'btn btn-primary';
+    }
+}
+</script>
+
+<script src="{{ url_for('static', filename='js/reports.js') }}"></script>
+{% endblock %}

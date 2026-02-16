@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block title %}Switch Market - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Switch Market</h1>
+    <div class="action-buttons">
+        <button class="btn btn-primary" onclick="openAddMarketModal()">+ Add Market</button>
+    </div>
+</div>
+
+<div style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <h2 style="margin-bottom: 20px; color: #1e3a5f;">Select Market</h2>
+    <div id="switchMarketList"></div>
+</div>
+
+<!-- Add Market Modal -->
+<div id="addEditMarketModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeMarketModal()">&times;</span>
+        <h2 id="modalTitle">Add New Market</h2>
+        <form id="marketForm">
+            <div class="form-group">
+                <label>Market Name *</label>
+                <input type="text" id="marketName" required>
+            </div>
+            <div class="form-group">
+                <label>Address</label>
+                <textarea id="marketAddress" rows="3"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Base Currency *</label>
+                <input type="text" id="marketCurrency" required placeholder="e.g., FCFA, USD, EUR">
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Create Market</button>
+                <button type="button" class="btn btn-secondary" onclick="closeMarketModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadSwitchMarkets();
+});
+
+function loadSwitchMarkets() {
+    fetch('/api/markets')
+        .then(response => response.json())
+        .then(markets => {
+            const marketList = document.getElementById('switchMarketList');
+            marketList.innerHTML = '';
+            
+            markets.forEach(market => {
+                const div = document.createElement('div');
+                div.style.cssText = 'padding: 20px; margin-bottom: 15px; border: 2px solid #e0e0e0; border-radius: 8px; transition: all 0.3s; position: relative; background: white;';
+                
+                const contentDiv = document.createElement('div');
+                contentDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 15px; width: 100%;';
+                
+                const infoDiv = document.createElement('div');
+                infoDiv.style.cssText = 'flex: 1; cursor: pointer;';
+                infoDiv.onclick = () => switchMarket(market.id);
+                infoDiv.innerHTML = `
+                    <div style="font-weight: 600; font-size: 18px; margin-bottom: 10px;">${market.name}</div>
+                    <div style="font-size: 14px; color: #666; margin-bottom: 5px;">${market.address || ''}</div>
+                    <div style="font-size: 12px; color: #999;">Currency: ${market.base_currency}</div>
+                `;
+                
+                const buttonsDiv = document.createElement('div');
+                buttonsDiv.style.cssText = 'display: flex; gap: 10px; flex-shrink: 0;';
+                
+                const editBtn = document.createElement('button');
+                editBtn.type = 'button';
+                editBtn.textContent = 'EDIT';
+                editBtn.style.cssText = 'min-width: 80px; height: 36px; border: 2px solid #2196f3; border-radius: 4px; background-color: #2196f3; color: white; cursor: pointer; font-size: 14px; font-weight: 600; padding: 0 12px;';
+                editBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); editMarket(market.id); return false; };
+                editBtn.title = 'Edit Market';
+                
+                const deleteBtn = document.createElement('button');
+                deleteBtn.type = 'button';
+                deleteBtn.textContent = 'DELETE';
+                deleteBtn.style.cssText = 'min-width: 80px; height: 36px; border: 2px solid #f44336; border-radius: 4px; background-color: #f44336; color: white; cursor: pointer; font-size: 14px; font-weight: 600; padding: 0 12px;';
+                deleteBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); deleteMarket(market.id); return false; };
+                deleteBtn.title = 'Delete Market';
+                
+                buttonsDiv.appendChild(editBtn);
+                buttonsDiv.appendChild(deleteBtn);
+                
+                contentDiv.appendChild(infoDiv);
+                contentDiv.appendChild(buttonsDiv);
+                div.appendChild(contentDiv);
+                div.addEventListener('mouseenter', function() {
+                    this.style.borderColor = '#fbc02d';
+                    this.style.backgroundColor = '#fff9c4';
+                });
+                div.addEventListener('mouseleave', function() {
+                    this.style.borderColor = '#e0e0e0';
+                    this.style.backgroundColor = 'white';
+                });
+                marketList.appendChild(div);
+            });
+        })
+        .catch(error => console.error('Error loading markets:', error));
+}
+
+function switchMarket(marketId) {
+    fetch('/api/switch-market', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ market_id: marketId })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            window.location.href = '/dashboard';
+        }
+    })
+    .catch(error => console.error('Error switching market:', error));
+}
+
+function editMarket(marketId) {
+    fetch(`/api/markets/${marketId}`)
+        .then(response => response.json())
+        .then(market => {
+            document.getElementById('marketName').value = market.name;
+            document.getElementById('marketAddress').value = market.address || '';
+            document.getElementById('marketCurrency').value = market.base_currency;
+            document.getElementById('marketForm').setAttribute('data-market-id', market.id);
+            document.getElementById('modalTitle').textContent = 'Edit Market';
+            document.getElementById('addEditMarketModal').style.display = 'block';
+        })
+        .catch(error => {
+            console.error('Error loading market:', error);
+            alert('Error loading market');
+        });
+}
+
+function deleteMarket(marketId) {
+    if (!confirm('Are you sure you want to delete this market? This can only be done if the market has no records.')) {
+        return;
+    }
+    
+    fetch(`/api/markets/${marketId}`, {
+        method: 'DELETE'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error: ' + data.error);
+        } else {
+            loadSwitchMarkets();
+            showNotification('Market deleted successfully', 'success');
+        }
+    })
+    .catch(error => {
+        console.error('Error deleting market:', error);
+        alert('Error deleting market');
+    });
+}
+
+function openAddMarketModal() {
+    document.getElementById('modalTitle').textContent = 'Add New Market';
+    document.getElementById('marketForm').removeAttribute('data-market-id');
+    document.getElementById('marketForm').reset();
+    document.getElementById('addEditMarketModal').style.display = 'block';
+}
+
+function closeMarketModal() {
+    document.getElementById('addEditMarketModal').style.display = 'none';
+    document.getElementById('marketForm').removeAttribute('data-market-id');
+}
+
+document.getElementById('marketForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const marketId = document.getElementById('marketForm').getAttribute('data-market-id');
+    const data = {
+        name: document.getElementById('marketName').value,
+        address: document.getElementById('marketAddress').value,
+        base_currency: document.getElementById('marketCurrency').value
+    };
+    
+    const url = marketId ? `/api/markets/${marketId}` : '/api/markets';
+    const method = marketId ? 'PUT' : 'POST';
+    
+    fetch(url, {
+        method: method,
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error: ' + data.error);
+        } else {
+            closeMarketModal();
+            loadSwitchMarkets();
+            showNotification(marketId ? 'Market updated successfully' : 'Market created successfully', 'success');
+        }
+    })
+    .catch(error => {
+        console.error('Error saving market:', error);
+        alert('Error saving market');
+    });
+});
+
+// Close modal when clicking outside
+window.addEventListener('click', function(event) {
+    const modal = document.getElementById('addEditMarketModal');
+    if (event.target == modal) {
+        closeMarketModal();
+    }
+});
+</script>
+{% endblock %}
+

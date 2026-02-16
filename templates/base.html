@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <nav class="top-nav">
+        <div class="nav-left">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="Sari Textile Logo" class="app-logo">
+            <h1 class="app-title">SARI TEXTILE WAREHOUSES ACCOUNTING</h1>
+        </div>
+        <div class="nav-right">
+            <button class="calc-method-indicator" id="calcMethodIndicator" title="Current Calculation Method" onclick="window.location.href='/administration'">
+                <span id="calcMethodIcon">📊</span>
+                <span id="calcMethodText">Average</span>
+            </button>
+            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle Dark Mode">
+                <span id="themeIcon">🌙</span>
+            </button>
+            <span class="user-info" id="userInfo">Admin</span>
+            <button class="market-selector" id="marketSelector">
+                <span id="currentMarket">POINTE NOIRE (JAMIL)</span>
+                <span class="dropdown-arrow">▼</span>
+            </button>
+            <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+        </div>
+    </nav>
+
+    <div class="main-container">
+        <!-- Left Sidebar -->
+        <aside class="sidebar">
+            <ul class="sidebar-menu">
+                <li><a href="{{ url_for('dashboard') }}" class="menu-item {% if request.endpoint == 'dashboard' %}active{% endif %}">
+                    <span class="menu-icon">📊</span>
+                    <span>Dashboard</span>
+                </a></li>
+                <li><a href="{{ url_for('companies_page') }}" class="menu-item {% if request.endpoint == 'companies_page' %}active{% endif %}">
+                    <span class="menu-icon">🏢</span>
+                    <span>Companies</span>
+                </a></li>
+                <li><a href="{{ url_for('items_page') }}" class="menu-item {% if request.endpoint == 'items_page' %}active{% endif %}">
+                    <span class="menu-icon">📦</span>
+                    <span>Items</span>
+                </a></li>
+                <li><a href="{{ url_for('purchases_page') }}" class="menu-item {% if request.endpoint == 'purchases_page' %}active{% endif %}">
+                    <span class="menu-icon">🛒</span>
+                    <span>Purchases</span>
+                </a></li>
+                <li><a href="{{ url_for('sales_page') }}" class="menu-item {% if request.endpoint == 'sales_page' %}active{% endif %}">
+                    <span class="menu-icon">💰</span>
+                    <span>Sales</span>
+                </a></li>
+                <li><a href="{{ url_for('payments_page') }}" class="menu-item {% if request.endpoint == 'payments_page' %}active{% endif %}">
+                    <span class="menu-icon">💳</span>
+                    <span>Payments</span>
+                </a></li>
+                <li><a href="{{ url_for('expenses_page') }}" class="menu-item {% if request.endpoint == 'expenses_page' %}active{% endif %}">
+                    <span class="menu-icon">💸</span>
+                    <span>General Expenses</span>
+                </a></li>
+                <li><a href="{{ url_for('reports_page') }}" class="menu-item {% if request.endpoint == 'reports_page' %}active{% endif %}">
+                    <span class="menu-icon">📈</span>
+                    <span>Reports</span>
+                </a></li>
+                <li><a href="{{ url_for('administration_page') }}" class="menu-item {% if request.endpoint == 'administration_page' %}active{% endif %}">
+                    <span class="menu-icon">⚙️</span>
+                    <span>Administration</span>
+                </a></li>
+                <li><a href="{{ url_for('switch_market_page') }}" class="menu-item {% if request.endpoint == 'switch_market_page' %}active{% endif %}">
+                    <span class="menu-icon">🔄</span>
+                    <span>Switch Market</span>
+                </a></li>
+                <li><a href="{{ url_for('currencies_page') }}" class="menu-item {% if request.endpoint == 'currencies_page' %}active{% endif %}">
+                    <span class="menu-icon">💵</span>
+                    <span>Currencies</span>
+                </a></li>
+            </ul>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <!-- Market Selector Modal -->
+    <div id="marketModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Select Market</h2>
+            <div id="marketList"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
+

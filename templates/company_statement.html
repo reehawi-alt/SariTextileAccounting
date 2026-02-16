@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block title %}Company Statement - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title" id="statementTitle">Company Statement</h1>
+    <div class="action-buttons">
+        <button class="btn btn-primary" onclick="printStatement()">🖨️ Print</button>
+        <button class="btn btn-secondary" onclick="exportStatementToExcel()">📊 Export to Excel</button>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Start Date</label>
+            <input type="date" id="statementStartDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>End Date</label>
+            <input type="date" id="statementEndDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <button class="btn btn-primary" onclick="loadStatement()">Apply Filters</button>
+            <button class="btn btn-secondary" onclick="clearStatementFilters()">Clear</button>
+        </div>
+    </div>
+</div>
+
+<!-- Statement Display -->
+<div id="statementArea" style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <div id="companyInfo" style="margin-bottom: 20px;">
+        <h2 id="companyName"></h2>
+        <p id="companyDetails"></p>
+    </div>
+    
+    <div id="statementContent">
+        <div class="spinner"></div>
+    </div>
+    
+    <div id="statementSummary" style="margin-top: 20px; padding: 15px; background: #f5f5f5; border-radius: 4px;">
+        <h3>Summary</h3>
+        <p id="currentBalance"></p>
+    </div>
+</div>
+
+<script>
+let companyId = {{ company_id }};
+let companyData = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Set default dates (last 10 days)
+    const today = new Date();
+    const tenDaysAgo = new Date(today);
+    tenDaysAgo.setDate(today.getDate() - 10);
+    document.getElementById('statementStartDate').value = tenDaysAgo.toISOString().split('T')[0];
+    document.getElementById('statementEndDate').value = today.toISOString().split('T')[0];
+    
+    loadCompanyInfo();
+    loadStatement();
+});
+
+function loadCompanyInfo() {
+    fetch(`/api/companies/${companyId}`)
+        .then(response => response.json())
+        .then(company => {
+            companyData = company;
+            document.getElementById('companyName').textContent = company.name;
+            document.getElementById('companyDetails').innerHTML = `
+                <strong>Category:</strong> ${company.category}<br>
+                <strong>Currency:</strong> ${company.currency}<br>
+                ${company.address ? `<strong>Address:</strong> ${company.address}` : ''}
+            `;
+            document.getElementById('statementTitle').textContent = `${company.name} - Statement`;
+        })
+        .catch(error => {
+            console.error('Error loading company:', error);
+        });
+}
+
+function loadStatement() {
+    const startDate = document.getElementById('statementStartDate').value;
+    const endDate = document.getElementById('statementEndDate').value;
+    
+    let url = `/api/companies/${companyId}/statement?`;
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+    
+    document.getElementById('statementContent').innerHTML = '<div class="spinner"></div>';
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('statementContent').innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                return;
+            }
+            
+            let html = '<div class="table-container"><table><thead><tr>';
+            html += '<th>Date</th><th>Type</th><th>Description</th><th>Debit</th><th>Credit</th><th>Balance</th>';
+            html += '</tr></thead><tbody>';
+            
+            if (data.statement.length === 0) {
+                html += '<tr><td colspan="6" class="empty-state">No transactions found</td></tr>';
+            } else {
+                data.statement.forEach(entry => {
+                    html += `<tr>
+                        <td>${entry.date}</td>
+                        <td><span class="badge badge-${entry.type.toLowerCase()}">${entry.type}</span></td>
+                        <td>${entry.description}</td>
+                        <td class="currency">${entry.debit > 0 ? formatCurrency(entry.debit, entry.currency) : '-'}</td>
+                        <td class="currency">${entry.credit > 0 ? formatCurrency(entry.credit, entry.currency) : '-'}</td>
+                        <td class="currency">${formatCurrency(entry.balance, entry.currency)}</td>
+                    </tr>`;
+                });
+            }
+            
+            html += '</tbody></table></div>';
+            document.getElementById('statementContent').innerHTML = html;
+            
+            document.getElementById('currentBalance').innerHTML = `
+                <strong>Current Balance:</strong> <span style="color: ${data.current_balance >= 0 ? 'green' : 'red'}">${formatCurrency(data.current_balance, data.company.currency)}</span>
+            `;
+        })
+        .catch(error => {
+            console.error('Error loading statement:', error);
+            document.getElementById('statementContent').innerHTML = '<p style="color: red;">Error loading statement</p>';
+        });
+}
+
+function clearStatementFilters() {
+    document.getElementById('statementStartDate').value = '';
+    document.getElementById('statementEndDate').value = '';
+    loadStatement();
+}
+
+function printStatement() {
+    window.print();
+}
+
+function exportStatementToExcel() {
+    const startDate = document.getElementById('statementStartDate').value;
+    const endDate = document.getElementById('statementEndDate').value;
+    
+    let url = `/api/companies/${companyId}/statement/export?`;
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+    
+    window.location.href = url;
+}
+</script>
+{% endblock %}
+

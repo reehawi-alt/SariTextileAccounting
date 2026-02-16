@@ -1,0 +1,422 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Dashboard</h1>
+</div>
+
+<!-- Two Column Layout -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px;">
+    <!-- Left Side: Daily Report -->
+    <div class="dashboard-container">
+        <h2 class="dashboard-header">
+            <span id="marketNameDailyReport">{{ market.name if market else 'MARKET' }}</span> DAILY REPORT
+        </h2>
+    
+    <div style="display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap;">
+        <div class="dashboard-form-group">
+            <label class="dashboard-form-label">Date *</label>
+            <input type="date" id="dailyReportDate" class="dashboard-form-input" required>
+        </div>
+        <div class="dashboard-form-group">
+            <label class="dashboard-form-label">Currency Rate *</label>
+            <input type="number" id="dailyReportRate" step="0.01" value="750" class="dashboard-form-input" required>
+        </div>
+        <div class="dashboard-form-group">
+            <label class="dashboard-form-label">Real Balance</label>
+            <input type="number" id="dailyReportRealBalance" step="0.01" class="dashboard-form-input">
+        </div>
+        <div style="display: flex; align-items: flex-end;">
+            <button onclick="loadDailyReport()" class="dashboard-btn">Refresh Report</button>
+        </div>
+    </div>
+    
+    <div id="dailyReportTable" style="display: none;">
+        <table class="dashboard-table">
+            <thead>
+                <tr>
+                    <th>DESCRIPTION</th>
+                    <th class="text-right" id="baseCurrencyHeader">{{ market.base_currency if market else 'CFA' }}</th>
+                    <th class="text-right">USD RATE (<span id="rateDisplay">750</span>)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td class="font-weight-500">Date</td>
+                    <td class="text-right" id="reportDateDisplay">-</td>
+                    <td class="text-right">-</td>
+                </tr>
+                <tr>
+                    <td class="font-weight-500">Balance on <span id="previousDateDisplay">-</span></td>
+                    <td class="text-right" id="balancePreviousDay">0.00</td>
+                    <td class="text-right" id="balancePreviousDayEuro">$ 0.00</td>
+                </tr>
+                <tr>
+                    <td class="font-weight-500">Total Safe (in)</td>
+                    <td class="text-right" id="totalSales">0.00</td>
+                    <td class="text-right" id="totalSalesEuro">$ 0.00</td>
+                </tr>
+                <tr>
+                    <td class="font-weight-500">Total Safe (out)</td>
+                    <td class="text-right" id="totalOut">0.00</td>
+                    <td class="text-right" id="totalOutEuro">$ 0.00</td>
+                </tr>
+                <tr>
+                    <td class="font-weight-500">Balance (Calculated Balance)</td>
+                    <td class="text-right font-weight-600" id="calculatedBalance">0.00</td>
+                    <td class="text-right font-weight-600" id="calculatedBalanceEuro">$ 0.00</td>
+                </tr>
+                <tr class="highlight-row">
+                    <td class="font-weight-600">Real Balance</td>
+                    <td class="text-right font-weight-600" id="realBalance">0.00</td>
+                    <td class="text-right font-weight-600" id="realBalanceEuro">$ 0.00</td>
+                </tr>
+                <tr>
+                    <td class="font-weight-500">Difference</td>
+                    <td class="text-right font-weight-600" id="difference">0.00</td>
+                    <td class="text-right font-weight-600" id="differenceEuro">$ 0.00</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <!-- Supplier Totals Section -->
+        <div id="supplierTotalsSection" style="margin-top: 20px; display: none;">
+            <h3 style="color: var(--text-primary); margin-bottom: 15px; transition: color 0.3s ease;">Sales by Supplier</h3>
+            <table class="dashboard-table">
+                <thead>
+                    <tr>
+                        <th>Supplier</th>
+                        <th class="text-right">Total Quantity</th>
+                        <th class="text-right">Total Amount (<span id="supplierBaseCurrencyHeader">{{ market.base_currency if market else 'CFA' }}</span>)</th>
+                        <th class="text-right">Total Amount (USD)</th>
+                    </tr>
+                </thead>
+                <tbody id="supplierTotalsBody">
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="dashboard-summary">
+            <strong>Summary = </strong><span id="summaryText">-</span>
+        </div>
+    </div>
+    </div>
+    
+    <!-- Right Side: Stock Report and Stats Cards -->
+    <div style="display: flex; flex-direction: column; gap: 15px;">
+        <!-- Stock by Supplier Report -->
+        <div class="dashboard-container" style="padding: 15px;">
+            <h2 class="dashboard-header" style="font-size: 16px; padding: 8px 12px; margin: -15px -15px 15px -15px;">
+                <span id="marketNameStockReport">{{ market.name if market else 'MARKET' }}</span> STOCK BY SUPPLIER
+            </h2>
+            <div id="stockBySupplierTable">
+                <table class="dashboard-table" style="font-size: 13px;">
+                    <thead>
+                        <tr>
+                            <th style="font-size: 12px;">SUPPLIER</th>
+                            <th class="text-right" style="font-size: 12px;">QUANTITY</th>
+                            <th class="text-right" style="font-size: 12px;">WEIGHT</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stockBySupplierBody">
+                        <tr>
+                            <td colspan="3" style="padding: 10px; text-align: center; color: var(--text-secondary);">Loading...</td>
+                        </tr>
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td class="font-weight-600">TOTAL</td>
+                            <td class="text-right font-weight-600" id="totalStockQuantity">0.00</td>
+                            <td class="text-right font-weight-600" id="totalStockWeight">0.00</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Compact Stats Cards in 2 columns -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div class="dashboard-stat-card">
+                <div class="dashboard-stat-label">Safe Balance</div>
+                <div class="dashboard-stat-value neutral">{{ stats.safe_balance|format_k }}</div>
+            </div>
+            <div class="dashboard-stat-card">
+                <div class="dashboard-stat-label">Total Stock</div>
+                <div class="dashboard-stat-value neutral">{{ stats.total_stock|int }}</div>
+            </div>
+            {% for currency, amount in stats.suppliers_payables_by_currency.items() %}
+            <div class="dashboard-stat-card">
+                <div class="dashboard-stat-label">Suppliers Payables ({{ currency }})</div>
+                <div class="dashboard-stat-value negative">{{ "%.2f"|format(amount) }}</div>
+            </div>
+            {% endfor %}
+            <div class="dashboard-stat-card">
+                <div class="dashboard-stat-label">Service Debit</div>
+                <div class="dashboard-stat-value negative">{{ stats.total_service_companies_debit|format_k }}</div>
+            </div>
+            {% for currency, amount in stats.customer_receivables_by_currency.items() %}
+            <div class="dashboard-stat-card">
+                <div class="dashboard-stat-label">Customer Receivables ({{ currency }})</div>
+                <div class="dashboard-stat-value positive">{{ "%.2f"|format(amount) }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<script>
+// Get market base currency from template
+const marketBaseCurrency = '{{ market.base_currency if market else "CFA" }}';
+
+function formatCurrency(amount, currency = null) {
+    const curr = currency || marketBaseCurrency;
+    const currUpper = curr.toUpperCase();
+    
+    if (currUpper === 'EURO' || currUpper === 'EUR' || currUpper === '€') {
+        return '€ ' + parseFloat(amount).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    } else if (currUpper === 'USD' || currUpper === '$' || currUpper === 'DOLLAR' || currUpper === 'DOLLARS') {
+        return '$' + parseFloat(amount).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    } else if (currUpper === 'TZS' || currUpper === 'TANZANIAN SHILLING') {
+        return parseFloat(amount).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' TZS';
+    }
+    // Default: show currency code
+    return parseFloat(amount).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' ' + curr;
+}
+
+function formatDate(dateStr) {
+    if (!dateStr) return '-';
+    const date = new Date(dateStr + 'T00:00:00');
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}-${month}-${year}`;
+}
+
+function loadDailyReport() {
+    const date = document.getElementById('dailyReportDate').value;
+    const rate = parseFloat(document.getElementById('dailyReportRate').value) || 750;
+    const realBalance = parseFloat(document.getElementById('dailyReportRealBalance').value) || 0;
+    
+    if (!date) {
+        alert('Please select a date');
+        return;
+    }
+    
+    fetch(`/api/daily-report?date=${date}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            
+            // Update rate display
+            document.getElementById('rateDisplay').textContent = rate;
+            
+            // Calculate previous date (1 day before report date)
+            // Parse date string (YYYY-MM-DD) to avoid timezone issues
+            const [year, month, day] = date.split('-').map(Number);
+            const reportDateObj = new Date(year, month - 1, day); // month is 0-indexed
+            const previousDateObj = new Date(reportDateObj);
+            previousDateObj.setDate(previousDateObj.getDate() - 1);
+            
+            // Format previous date as YYYY-MM-DD
+            const prevYear = previousDateObj.getFullYear();
+            const prevMonth = String(previousDateObj.getMonth() + 1).padStart(2, '0');
+            const prevDay = String(previousDateObj.getDate()).padStart(2, '0');
+            const previousDateStr = formatDate(`${prevYear}-${prevMonth}-${prevDay}`);
+            
+            // Update date displays
+            document.getElementById('reportDateDisplay').textContent = formatDate(date);
+            document.getElementById('previousDateDisplay').textContent = previousDateStr;
+            
+            // Get values from API
+            const balancePreviousDay = data.balance_previous_day || 0;
+            const totalSales = data.total_sales || 0;
+            const totalOut = data.total_out || 0;
+            const calculatedBalance = data.calculated_balance || 0;
+            
+            // Calculate difference
+            const difference = realBalance - calculatedBalance;
+            const diffAbs = Math.abs(difference);
+            const isMatch = diffAbs < 0.01; // Consider it a match if difference is less than 0.01
+            
+            // Update table values (base currency column)
+            document.getElementById('balancePreviousDay').textContent = formatCurrency(balancePreviousDay, marketBaseCurrency);
+            document.getElementById('totalSales').textContent = formatCurrency(totalSales, marketBaseCurrency);
+            document.getElementById('totalOut').textContent = formatCurrency(totalOut, marketBaseCurrency);
+            document.getElementById('calculatedBalance').textContent = formatCurrency(calculatedBalance, marketBaseCurrency);
+            document.getElementById('realBalance').textContent = formatCurrency(realBalance, marketBaseCurrency);
+            
+            // Update difference row - show "Safe Matches" if difference is zero
+            const differenceCell = document.getElementById('difference');
+            const differenceEuroCell = document.getElementById('differenceEuro');
+            if (isMatch) {
+                differenceCell.innerHTML = '<strong style="color: #4caf50;">Safe Matches</strong>';
+                differenceEuroCell.innerHTML = '<strong style="color: #4caf50;">Safe Matches</strong>';
+            } else {
+                differenceCell.textContent = formatCurrency(difference, marketBaseCurrency);
+                differenceEuroCell.textContent = formatCurrency(difference / rate, 'USD');
+            }
+            
+            // Update USD column (divided by rate)
+            document.getElementById('balancePreviousDayEuro').textContent = formatCurrency(balancePreviousDay / rate, 'USD');
+            document.getElementById('totalSalesEuro').textContent = formatCurrency(totalSales / rate, 'USD');
+            document.getElementById('totalOutEuro').textContent = formatCurrency(totalOut / rate, 'USD');
+            document.getElementById('calculatedBalanceEuro').textContent = formatCurrency(calculatedBalance / rate, 'USD');
+            document.getElementById('realBalanceEuro').textContent = formatCurrency(realBalance / rate, 'USD');
+            
+            // Update supplier totals
+            const supplierTotals = data.supplier_totals || [];
+            const supplierTotalsBody = document.getElementById('supplierTotalsBody');
+            const supplierTotalsSection = document.getElementById('supplierTotalsSection');
+            
+            if (supplierTotals.length > 0) {
+                supplierTotalsBody.innerHTML = supplierTotals.map(supplier => `
+                    <tr>
+                        <td class="font-weight-500">${supplier.supplier_name}</td>
+                        <td class="text-right">${parseFloat(supplier.total_quantity).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                        <td class="text-right font-weight-600">${formatCurrency(supplier.total_amount, marketBaseCurrency)}</td>
+                        <td class="text-right font-weight-600">${formatCurrency(supplier.total_amount / rate, 'USD')}</td>
+                    </tr>
+                `).join('');
+                supplierTotalsSection.style.display = 'block';
+            } else {
+                supplierTotalsSection.style.display = 'none';
+            }
+            
+            // Update summary
+            const diffInK = (diffAbs / 1000).toFixed(0);
+            let summaryText;
+            if (isMatch) {
+                summaryText = '<strong style="color: #4caf50;">Safe Matches ✓</strong>';
+            } else {
+                summaryText = difference > 0 
+                    ? `${diffInK} K Extra available in Safe`
+                    : `${diffInK} K Missing in Safe`;
+            }
+            document.getElementById('summaryText').innerHTML = summaryText;
+            
+            // Show table
+            document.getElementById('dailyReportTable').style.display = 'block';
+        })
+        .catch(error => {
+            console.error('Error loading daily report:', error);
+            alert('Error loading daily report');
+        });
+}
+
+// Function to load real balance from Safe Statement
+function loadRealBalanceFromSafeStatement(date) {
+    if (!date) return;
+    
+    fetch(`/api/reports/safe-statement/real-balance?date=${date}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.real_balance !== null && data.real_balance !== undefined) {
+                document.getElementById('dailyReportRealBalance').value = data.real_balance;
+                // If report is already loaded, update it
+                if (document.getElementById('dailyReportTable').style.display === 'block') {
+                    loadDailyReport();
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error loading real balance:', error);
+        });
+}
+
+// Load stock by supplier
+function loadStockBySupplier() {
+    fetch('/api/stock-by-supplier')
+        .then(response => response.json())
+        .then(data => {
+            const tbody = document.getElementById('stockBySupplierBody');
+            if (!tbody) return;
+            
+            if (data.error) {
+                tbody.innerHTML = '<tr><td colspan="3" style="padding: 10px; text-align: center; color: #f44336;">' + data.error + '</td></tr>';
+                return;
+            }
+            
+            if (!data.suppliers || data.suppliers.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" style="padding: 10px; text-align: center; color: var(--text-secondary);">No stock available</td></tr>';
+                document.getElementById('totalStockQuantity').textContent = '0.00';
+                document.getElementById('totalStockWeight').textContent = '0.00';
+                return;
+            }
+            
+            tbody.innerHTML = data.suppliers.map(supplier => `
+                <tr>
+                    <td>${supplier.supplier_name}</td>
+                    <td class="text-right">${parseFloat(supplier.quantity).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                    <td class="text-right">${parseFloat(supplier.weight).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                </tr>
+            `).join('');
+            
+            // Update totals
+            document.getElementById('totalStockQuantity').textContent = parseFloat(data.total.quantity).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('totalStockWeight').textContent = parseFloat(data.total.weight).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        })
+        .catch(error => {
+            console.error('Error loading stock by supplier:', error);
+            const tbody = document.getElementById('stockBySupplierBody');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="3" style="padding: 10px; text-align: center; color: #f44336;">Error loading stock data</td></tr>';
+            }
+        });
+}
+
+// Auto-update when real balance changes
+document.addEventListener('DOMContentLoaded', function() {
+    // Set default date to today
+    const today = new Date().toISOString().split('T')[0];
+    const dateInput = document.getElementById('dailyReportDate');
+    if (dateInput) {
+        dateInput.value = today;
+        // Load real balance for today's date
+        loadRealBalanceFromSafeStatement(today);
+    }
+    
+    // Auto-generate report on page load
+    setTimeout(function() {
+        if (dateInput.value) {
+            loadDailyReport();
+        }
+    }, 500);
+    
+    // Load stock by supplier on page load
+    loadStockBySupplier();
+    
+    // Auto-load real balance when date changes
+    dateInput.addEventListener('change', function() {
+        loadRealBalanceFromSafeStatement(this.value);
+        // Auto-generate report when date changes
+        setTimeout(function() {
+            loadDailyReport();
+        }, 300);
+    });
+    
+    const realBalanceInput = document.getElementById('dailyReportRealBalance');
+    if (realBalanceInput) {
+        realBalanceInput.addEventListener('input', function() {
+            if (document.getElementById('dailyReportTable').style.display === 'block') {
+                loadDailyReport();
+            }
+        });
+    }
+    
+    const rateInput = document.getElementById('dailyReportRate');
+    if (rateInput) {
+        rateInput.addEventListener('input', function() {
+            if (document.getElementById('dailyReportTable').style.display === 'block') {
+                loadDailyReport();
+            }
+        });
+    }
+});
+</script>
+{% endblock %}
+

@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block title %}Safe Statement - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Safe Statement</h1>
+    <div class="action-buttons">
+        <button class="btn btn-primary" onclick="printStatement()">🖨️ Print</button>
+        <button class="btn btn-secondary" onclick="exportStatementToExcel()">📊 Export to Excel</button>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Start Date</label>
+            <input type="date" id="statementStartDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>End Date</label>
+            <input type="date" id="statementEndDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <button class="btn btn-primary" onclick="loadStatement()">Apply Filters</button>
+            <button class="btn btn-secondary" onclick="clearStatementFilters()">Clear</button>
+        </div>
+    </div>
+</div>
+
+<!-- Statement Display -->
+<div id="statementArea" style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <div id="statementContent">
+        <div class="spinner"></div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Set default dates (last 10 days)
+    const today = new Date();
+    const tenDaysAgo = new Date(today);
+    tenDaysAgo.setDate(today.getDate() - 10);
+    document.getElementById('statementStartDate').value = tenDaysAgo.toISOString().split('T')[0];
+    document.getElementById('statementEndDate').value = today.toISOString().split('T')[0];
+    
+    loadStatement();
+});
+
+function loadStatement() {
+    const startDate = document.getElementById('statementStartDate').value;
+    const endDate = document.getElementById('statementEndDate').value;
+    
+    let url = '/api/reports/safe-statement?';
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+    
+    document.getElementById('statementContent').innerHTML = '<div class="spinner"></div>';
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('statementContent').innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                return;
+            }
+            
+            if (!data.statement || data.statement.length === 0) {
+                document.getElementById('statementContent').innerHTML = '<p>No data found for the selected period.</p>';
+                return;
+            }
+            
+            let html = '<div class="table-container"><table class="data-table"><thead><tr>';
+            html += '<th>Date</th>';
+            html += '<th>Total IN</th>';
+            html += '<th>Total OUT</th>';
+            html += '<th>Balance</th>';
+            html += '<th>Real Balance</th>';
+            html += '</tr></thead><tbody>';
+            
+            data.statement.forEach(row => {
+                html += '<tr>';
+                html += `<td>${formatDate(row.date)}</td>`;
+                html += `<td style="color: green; font-weight: bold;">${formatNumber(row.total_in)}</td>`;
+                html += `<td style="color: red; font-weight: bold;">${formatNumber(row.total_out)}</td>`;
+                html += `<td style="font-weight: bold;">${formatNumber(row.balance)}</td>`;
+                const realBalanceValue = row.real_balance !== null && row.real_balance !== undefined ? row.real_balance : '';
+                html += `<td><input type="number" step="0.01" class="real-balance-input" data-date="${row.date}" value="${realBalanceValue}" onchange="updateRealBalance('${row.date}', this.value)" style="width: 150px; padding: 5px; border: 1px solid #ddd; border-radius: 4px;"></td>`;
+                html += '</tr>';
+            });
+            
+            html += '</tbody></table></div>';
+            
+            document.getElementById('statementContent').innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading statement:', error);
+            document.getElementById('statementContent').innerHTML = `<p style="color: red;">Error loading statement: ${error.message}</p>`;
+        });
+}
+
+function updateRealBalance(date, value) {
+    const realBalance = value === '' ? null : parseFloat(value);
+    
+    fetch('/api/reports/safe-statement/real-balance', {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            date: date,
+            real_balance: realBalance
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error updating real balance: ' + data.error);
+            // Reload to restore previous value
+            loadStatement();
+        } else {
+            // Success - value is already updated in the input
+            console.log('Real balance updated successfully');
+        }
+    })
+    .catch(error => {
+        console.error('Error updating real balance:', error);
+        alert('Error updating real balance. Please try again.');
+        // Reload to restore previous value
+        loadStatement();
+    });
+}
+
+function clearStatementFilters() {
+    const today = new Date();
+    const tenDaysAgo = new Date(today);
+    tenDaysAgo.setDate(today.getDate() - 10);
+    document.getElementById('statementStartDate').value = tenDaysAgo.toISOString().split('T')[0];
+    document.getElementById('statementEndDate').value = today.toISOString().split('T')[0];
+    loadStatement();
+}
+
+function formatDate(dateStr) {
+    const date = new Date(dateStr + 'T00:00:00');
+    return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function formatNumber(num) {
+    return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
+}
+
+function printStatement() {
+    window.print();
+}
+
+function exportStatementToExcel() {
+    const startDate = document.getElementById('statementStartDate').value;
+    const endDate = document.getElementById('statementEndDate').value;
+    
+    let url = '/api/reports/safe-statement?';
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+    url += 'export=excel';
+    
+    window.location.href = url;
+}
+</script>
+
+<style>
+.real-balance-input:focus {
+    outline: 2px solid #1e3a5f;
+    border-color: #1e3a5f;
+}
+</style>
+{% endblock %}
+

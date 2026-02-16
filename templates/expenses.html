@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}General Expenses - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">General Expenses</h1>
+    <div class="action-buttons">
+        <button class="btn btn-secondary" onclick="exportExpenses()">📊 Export to Excel</button>
+        <button class="btn btn-secondary" onclick="openImportModal()">Import from Excel</button>
+        <button class="btn btn-primary" onclick="openAddExpenseModal()">+ Add Expense</button>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="filters" style="margin-bottom: 20px;">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Start Date</label>
+            <input type="date" id="expenseStartDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>End Date</label>
+            <input type="date" id="expenseEndDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>Category</label>
+            <select id="expenseCategoryFilter" class="form-control">
+                <option value="">All Categories</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <button class="btn btn-primary" onclick="loadExpenses()">Apply Filters</button>
+            <button class="btn btn-secondary" onclick="clearExpenseFilters()">Clear</button>
+        </div>
+    </div>
+</div>
+
+<div class="table-container">
+    <table id="expensesTable">
+        <thead>
+            <tr>
+                <th class="sortable">Date</th>
+                <th>Description</th>
+                <th>Category</th>
+                <th class="sortable">Amount</th>
+                <th>Currency</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="expensesTableBody">
+            <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Add/Edit Expense Modal -->
+<div id="expenseModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeExpenseModal()">&times;</span>
+        <h2 id="expenseModalTitle">Add Expense</h2>
+        <form id="expenseForm">
+            <input type="hidden" id="expenseId">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Date *</label>
+                    <input type="date" id="expenseDate" required>
+                </div>
+                <div class="form-group">
+                    <label>Category *</label>
+                    <div style="display: flex; gap: 10px;">
+                        <select id="expenseCategory" required style="flex: 1;">
+                            <option value="">Select or Type Category</option>
+                        </select>
+                        <button type="button" class="btn btn-secondary" onclick="addNewCategory()" title="Add New Category">+</button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Description *</label>
+                <textarea id="expenseDescription" rows="3" required></textarea>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Amount *</label>
+                    <input type="number" id="expenseAmount" step="0.01" required>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Currency *</label>
+                        <input type="text" id="expenseCurrency" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Exchange Rate *</label>
+                        <input type="number" id="expenseExchangeRate" step="0.0001" value="1" required>
+                    </div>
+                </div>
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Save Expense</button>
+                <button type="button" class="btn btn-secondary" onclick="closeExpenseModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Import Modal -->
+<div id="importModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeImportModal()">&times;</span>
+        <h2>Import Expenses from Excel</h2>
+        <p style="color:#666;margin-bottom:10px;">Required columns: Date, Description, Category, Amount, Currency, ExchangeRate</p>
+        <form id="importExpensesForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>Excel File *</label>
+                <input type="file" id="expensesExcelFile" accept=".xlsx,.xls" required>
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Import</button>
+                <button type="button" class="btn btn-secondary" onclick="closeImportModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/expenses.js') }}"></script>
+{% endblock %}
+
