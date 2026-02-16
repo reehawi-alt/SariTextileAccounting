@@ -208,6 +208,94 @@ def get_current_market():
         })
     return jsonify({'error': 'No market available'}), 404
 
+@app.route('/api/import-data', methods=['POST'])
+@login_required
+def import_data():
+    """Import data from local export (JSON). Replaces all data except users."""
+    from decimal import Decimal
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        # Tables in delete order (children first)
+        delete_order = [
+            SaleItemAllocation, InventoryBatch, InventoryAdjustment, SafeStatementRealBalance,
+            SafeTransaction, GeneralExpense, Payment, SaleItem, Sale, PurchaseItem,
+            PurchaseContainer, Item, Company, Market
+        ]
+        # Tables in insert order (parents first)
+        table_config = [
+            ('markets', Market, ['id', 'name', 'address', 'base_currency', 'calculation_method', 'created_at']),
+            ('companies', Company, ['id', 'market_id', 'name', 'address', 'category', 'payment_type', 'currency', 'created_at']),
+            ('items', Item, ['id', 'market_id', 'supplier_id', 'code', 'name', 'weight', 'grade', 'category1', 'category2', 'created_at']),
+            ('purchase_containers', PurchaseContainer, ['id', 'market_id', 'container_number', 'supplier_id', 'currency', 'exchange_rate', 'date', 'notes', 'expense1_amount', 'expense1_currency', 'expense1_exchange_rate', 'expense2_amount', 'expense2_service_company_id', 'expense2_currency', 'expense2_exchange_rate', 'expense3_amount', 'expense3_currency', 'expense3_exchange_rate', 'created_at']),
+            ('purchase_items', PurchaseItem, ['id', 'container_id', 'item_id', 'quantity', 'unit_price', 'total_price']),
+            ('sales', Sale, ['id', 'market_id', 'invoice_number', 'customer_id', 'supplier_id', 'date', 'total_amount', 'paid_amount', 'balance', 'payment_type', 'status', 'notes', 'created_at']),
+            ('sale_items', SaleItem, ['id', 'sale_id', 'item_id', 'quantity', 'unit_price', 'total_price']),
+            ('payments', Payment, ['id', 'market_id', 'company_id', 'sale_id', 'payment_type', 'amount', 'currency', 'exchange_rate', 'amount_base_currency_stored', 'date', 'notes', 'loan', 'created_at']),
+            ('general_expenses', GeneralExpense, ['id', 'market_id', 'date', 'description', 'category', 'amount', 'currency', 'exchange_rate', 'created_at']),
+            ('safe_transactions', SafeTransaction, ['id', 'market_id', 'transaction_type', 'amount', 'currency', 'exchange_rate', 'amount_base_currency_stored', 'date', 'description', 'payment_id', 'sale_id', 'general_expense_id', 'balance_after', 'created_at']),
+            ('safe_statement_real_balances', SafeStatementRealBalance, ['id', 'market_id', 'date', 'real_balance', 'created_at', 'updated_at']),
+            ('inventory_adjustments', InventoryAdjustment, ['id', 'market_id', 'item_id', 'adjustment_type', 'quantity', 'date', 'reason', 'notes', 'created_at', 'updated_at']),
+            ('inventory_batches', InventoryBatch, ['id', 'market_id', 'item_id', 'purchase_item_id', 'container_id', 'purchase_date', 'original_quantity', 'available_quantity', 'unit_price', 'cog_per_unit', 'cost_per_unit', 'currency', 'exchange_rate', 'created_at']),
+            ('sale_item_allocations', SaleItemAllocation, ['id', 'sale_item_id', 'batch_id', 'quantity', 'cost_per_unit', 'total_cost', 'created_at']),
+        ]
+        
+        def to_py(val):
+            if val is None: return None
+            if isinstance(val, str) and val.endswith('Z'): val = val.replace('Z', '+00:00')
+            return val
+        
+        # Delete existing data
+        for model in delete_order:
+            model.query.delete()
+        db.session.commit()
+        
+        # Reset sequences for SQLite (so new IDs don't conflict) - skip on PostgreSQL
+        try:
+            db.session.execute(db.text("DELETE FROM sqlite_sequence WHERE name IN ('markets','companies','items','purchase_containers','purchase_items','sales','sale_items','payments','general_expenses','safe_transactions','safe_statement_real_balances','inventory_adjustments','inventory_batches','sale_item_allocations')"))
+            db.session.commit()
+        except Exception:
+            pass  # PostgreSQL doesn't have sqlite_sequence
+        
+        total = 0
+        for table_name, model, columns in table_config:
+            rows = data.get(table_name, [])
+            for row in rows:
+                try:
+                    kwargs = {}
+                    for col in columns:
+                        if col in row and row[col] is not None:
+                            v = row[col]
+                            if isinstance(v, (int, float)) and 'amount' in col.lower() or 'price' in col.lower() or 'quantity' in col.lower() or 'rate' in col.lower() or 'balance' in col.lower():
+                                kwargs[col] = Decimal(str(v))
+                            elif 'date' in col and col != 'created_at' and col != 'updated_at':
+                                kwargs[col] = datetime.strptime(str(v)[:10], '%Y-%m-%d').date() if v else None
+                            elif 'created_at' in col or 'updated_at' in col:
+                                try:
+                                    kwargs[col] = datetime.fromisoformat(str(v).replace('Z', '+00:00')) if v else datetime.utcnow()
+                                except: kwargs[col] = datetime.utcnow()
+                            else:
+                                kwargs[col] = v
+                    obj = model(**kwargs)
+                    db.session.add(obj)
+                    total += 1
+                except Exception as e:
+                    db.session.rollback()
+                    return jsonify({'error': f'Import failed at {table_name}: {str(e)}'}), 400
+        db.session.commit()
+        
+        # Set session to first market
+        market = Market.query.first()
+        if market:
+            session['current_market_id'] = market.id
+        
+        return jsonify({'success': True, 'message': f'Imported {total} records successfully.'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/switch-market', methods=['GET', 'POST'])
 @login_required
 def switch_market():

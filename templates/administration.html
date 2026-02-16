@@ -273,6 +273,22 @@
             <p id="recalculateFIFOMessage" style="margin-top: 10px; color: #666; font-size: 13px;"></p>
         </div>
     </div>
+    
+    <!-- Import Data (for migrating local data to deployed app) -->
+    <div style="background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #2196f3;">
+        <h3 style="margin-bottom: 15px; color: #1e3a5f; font-size: 18px;">📥 Import Data from Local Backup</h3>
+        <p style="color: #666; margin-bottom: 15px;">Upload a data export file from your local app to load your markets, companies, items, sales, and more into this deployed instance.</p>
+        <ol style="color: #666; margin-bottom: 15px; padding-left: 20px;">
+            <li>On your local computer, run: <code style="background:#e0e0e0;padding:2px 6px;border-radius:4px;">python scripts/export_data.py</code></li>
+            <li>This creates <code style="background:#e0e0e0;padding:2px 6px;border-radius:4px;">data_export.json</code></li>
+            <li>Upload that file below</li>
+        </ol>
+        <form id="importDataForm">
+            <input type="file" id="importDataFile" accept=".json" required style="margin-bottom: 10px;">
+            <button type="submit" class="btn btn-primary" id="importDataBtn">Import Data</button>
+        </form>
+        <p id="importDataMessage" style="margin-top: 10px; font-weight: 600;"></p>
+    </div>
 </div>
 
 <script>
@@ -343,6 +359,50 @@ document.addEventListener('DOMContentLoaded', function() {
             processPhysicalCount();
         });
     }
+    
+    // Import Data form submission
+    document.getElementById('importDataForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const fileInput = document.getElementById('importDataFile');
+        if (!fileInput.files.length) return;
+        const file = fileInput.files[0];
+        const reader = new FileReader();
+        reader.onload = function(ev) {
+            try {
+                const data = JSON.parse(ev.target.result);
+                document.getElementById('importDataBtn').disabled = true;
+                document.getElementById('importDataMessage').textContent = 'Importing...';
+                document.getElementById('importDataMessage').style.color = '#666';
+                fetch('/api/import-data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                })
+                .then(r => r.json())
+                .then(result => {
+                    document.getElementById('importDataBtn').disabled = false;
+                    if (result.error) {
+                        document.getElementById('importDataMessage').textContent = 'Error: ' + result.error;
+                        document.getElementById('importDataMessage').style.color = '#f44336';
+                    } else {
+                        document.getElementById('importDataMessage').textContent = 'Import successful! ' + (result.message || '');
+                        document.getElementById('importDataMessage').style.color = '#4caf50';
+                        fileInput.value = '';
+                        setTimeout(() => location.reload(), 2000);
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('importDataBtn').disabled = false;
+                    document.getElementById('importDataMessage').textContent = 'Error: ' + err.message;
+                    document.getElementById('importDataMessage').style.color = '#f44336';
+                });
+            } catch (err) {
+                document.getElementById('importDataMessage').textContent = 'Invalid JSON file: ' + err.message;
+                document.getElementById('importDataMessage').style.color = '#f44336';
+            }
+        };
+        reader.readAsText(file);
+    });
 });
 
 function saveAdjustment() {

@@ -32,6 +32,7 @@ instance/
 *.db
 *.sqlite
 *.sqlite3
+data_export.json
 
 # Environment variables (secrets)
 .env
