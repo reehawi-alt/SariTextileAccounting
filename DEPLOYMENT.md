@@ -48,19 +48,51 @@ git branch -M main
 git push -u origin main
 ```
 
-## Step 5: Deployment options
+## Step 5: Deploy to Render (Recommended for Testing)
+
+**Render** offers a free tier and is the easiest way to get your app online for testing.
+
+### Step-by-step:
+
+1. **Go to [render.com](https://render.com)** and sign up (free) – you can use your GitHub account.
+
+2. **Create a new Web Service**
+   - Click **New +** → **Web Service**
+   - Connect your GitHub account if not already connected
+   - Select the repository: **reehawi-alt/SariTextileAccounting**
+
+3. **Configure the service**
+   - **Name:** `sari-textile-accounting` (or any name)
+   - **Region:** Choose closest to you
+   - **Branch:** `main`
+   - **Runtime:** `Python 3`
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `gunicorn app:app`
+
+4. **Environment variables** (optional for testing)
+   - Click **Advanced** → **Add Environment Variable**
+   - Add `SECRET_KEY` with a random string (e.g. `my-super-secret-key-12345`)
+
+5. **Click Create Web Service**
+   - Render will build and deploy your app (takes 2–5 minutes)
+   - You’ll get a URL like: `https://sari-textile-accounting.onrender.com`
+
+6. **Access your app**
+   - Default login: `admin` / `admin123`
+
+### Note for testing
+- SQLite is used on the free tier; data is reset when the service restarts.
+- For production, add a PostgreSQL database on Render and set `DATABASE_URL`.
+
+---
+
+## Other deployment options
 
 ### Option A: Railway
 - Connect your GitHub repo at [railway.app](https://railway.app)
 - Add PostgreSQL (or keep SQLite for small deployments)
 - Set `DATABASE_URL` if using PostgreSQL
 - Deploy
-
-### Option B: Render
-- Connect repo at [render.com](https://render.com)
-- Create a new Web Service
-- Build: `pip install -r requirements.txt`
-- Start: `gunicorn app:app` (add gunicorn to requirements.txt)
 
 ### Option C: PythonAnywhere
 - Upload via GitHub import

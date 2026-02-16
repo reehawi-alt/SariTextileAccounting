@@ -1,0 +1,15 @@
+# Render Blueprint - Deploy with one click
+# https://dashboard.render.com/select-repo?type=blueprint
+
+services:
+  - type: web
+    name: sari-textile-accounting
+    runtime: python
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: "3.11.0"

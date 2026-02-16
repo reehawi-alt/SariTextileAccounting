@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 import json
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///accounting.db'
+app.config['SECRET_KEY'] = __import__('os').environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+app.config['SQLALCHEMY_DATABASE_URI'] = __import__('os').environ.get('DATABASE_URL', 'sqlite:///accounting.db').replace('postgres://', 'postgresql://')  # Render uses postgres://
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db.init_app(app)
