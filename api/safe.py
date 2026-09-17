@@ -8,6 +8,8 @@ from decimal import Decimal
 from datetime import datetime
 import pandas as pd
 from io import BytesIO
+from openpyxl.utils import get_column_letter
+from api.expenses import _get_currency_rates_for_dates, _resolve_usd_rate, _approx_usd_amount
 
 bp = Blueprint('safe', __name__)
 
@@ -58,7 +60,10 @@ def get_transactions():
         'description': t.description,
         'balance_after': float(t.balance_after),
         'payment_id': t.payment_id,
-        'sale_id': t.sale_id
+        'sale_id': t.sale_id,
+        'general_expense_id': t.general_expense_id,
+        'partner_drawing_id': t.partner_drawing_id,
+        'is_editable': not (t.payment_id or t.sale_id or t.general_expense_id or t.partner_drawing_id)
     } for t in transactions])
 
 @bp.route('/balance', methods=['GET'])
@@ -166,9 +171,9 @@ def get_adjustment(transaction_id):
     if not transaction:
         return jsonify({'error': 'Transaction not found'}), 404
     
-    # Only allow editing manual adjustments (no payment_id, sale_id, or general_expense_id)
-    if transaction.payment_id or transaction.sale_id or transaction.general_expense_id:
-        return jsonify({'error': 'This transaction cannot be edited (it is linked to a payment, sale, or expense)'}), 400
+    # Only manual adjustments (not linked to payment, sale, expense, or partner drawing)
+    if transaction.payment_id or transaction.sale_id or transaction.general_expense_id or transaction.partner_drawing_id:
+        return jsonify({'error': 'This transaction cannot be edited (it is linked to a payment, sale, expense, or partner drawing)'}), 400
     
     return jsonify({
         'id': transaction.id,
@@ -198,9 +203,8 @@ def update_adjustment(transaction_id):
     if not transaction:
         return jsonify({'error': 'Transaction not found'}), 404
     
-    # Only allow editing manual adjustments (no payment_id, sale_id, or general_expense_id)
-    if transaction.payment_id or transaction.sale_id or transaction.general_expense_id:
-        return jsonify({'error': 'This transaction cannot be edited (it is linked to a payment, sale, or expense)'}), 400
+    if transaction.payment_id or transaction.sale_id or transaction.general_expense_id or transaction.partner_drawing_id:
+        return jsonify({'error': 'This transaction cannot be edited (it is linked to a payment, sale, expense, or partner drawing)'}), 400
     
     data = request.json
     
@@ -263,9 +267,8 @@ def delete_adjustment(transaction_id):
     if not transaction:
         return jsonify({'error': 'Transaction not found'}), 404
     
-    # Only allow deleting manual adjustments (no payment_id, sale_id, or general_expense_id)
-    if transaction.payment_id or transaction.sale_id or transaction.general_expense_id:
-        return jsonify({'error': 'This transaction cannot be deleted (it is linked to a payment, sale, or expense)'}), 400
+    if transaction.payment_id or transaction.sale_id or transaction.general_expense_id or transaction.partner_drawing_id:
+        return jsonify({'error': 'This transaction cannot be deleted (it is linked to a payment, sale, expense, or partner drawing)'}), 400
     
     db.session.delete(transaction)
     db.session.commit()
@@ -440,6 +443,164 @@ def export_safe_report():
     return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                     as_attachment=True, download_name=filename)
 
+def _resolve_customer_payment_type(txn):
+    """Return customer payment_type ('Cash' or 'Credit') or None for non-customer inflows."""
+    customer = None
+    if txn.payment_id:
+        payment = Payment.query.get(txn.payment_id)
+        if payment:
+            if payment.company and payment.company.category == 'Customer':
+                customer = payment.company
+            elif payment.sale_id:
+                sale = Sale.query.get(payment.sale_id)
+                if sale and sale.customer:
+                    customer = sale.customer
+    elif txn.sale_id:
+        sale = Sale.query.get(txn.sale_id)
+        if sale and sale.customer:
+            customer = sale.customer
+    if customer:
+        return customer.payment_type or 'Cash'
+    return None
+
+
+def _build_collected_money_entry(txn):
+    """Serialize one safe inflow for the collected money report."""
+    source_type = 'Other'
+    source_name = None
+    invoice_number = None
+    customer_name = None
+
+    if txn.payment_id:
+        payment = Payment.query.get(txn.payment_id)
+        if payment:
+            if payment.loan:
+                source_type = 'Loan'
+                source_name = payment.company.name if payment.company else 'Unknown'
+            else:
+                source_type = 'Payment'
+                source_name = payment.company.name if payment.company else 'Unknown'
+                if payment.sale_id:
+                    sale = Sale.query.get(payment.sale_id)
+                    if sale:
+                        invoice_number = sale.invoice_number
+                        customer_name = sale.customer.name if sale.customer else None
+    elif txn.sale_id:
+        sale = Sale.query.get(txn.sale_id)
+        if sale:
+            source_type = 'Cash Sale'
+            source_name = sale.customer.name if sale.customer else 'Unknown'
+            invoice_number = sale.invoice_number
+            customer_name = sale.customer.name if sale.customer else None
+
+    amount = txn.amount_base_currency_stored if txn.amount_base_currency_stored else txn.amount_base_currency
+
+    return {
+        'date': txn.date.isoformat(),
+        'source_type': source_type,
+        'source_name': source_name or 'Unknown',
+        'customer_name': customer_name,
+        'invoice_number': invoice_number,
+        'description': txn.description or '',
+        'amount': float(amount),
+        'currency': txn.currency,
+        'exchange_rate': float(txn.exchange_rate),
+        'customer_payment_type': _resolve_customer_payment_type(txn),
+    }
+
+
+def _filter_collected_money_by_customer_type(collected_money, customer_type):
+    """Filter inflows by customer payment type: both, cash, or credit (debit customers)."""
+    if not customer_type or customer_type == 'both':
+        return collected_money
+    if customer_type == 'cash':
+        return [item for item in collected_money if item.get('customer_payment_type') == 'Cash']
+    if customer_type == 'credit':
+        return [item for item in collected_money if item.get('customer_payment_type') == 'Credit']
+    return collected_money
+
+
+def _fetch_collected_money(market_id, start_date, end_date, customer_type='both'):
+    query = SafeTransaction.query.filter_by(
+        market_id=market_id,
+        transaction_type='Inflow'
+    )
+    if start_date:
+        query = query.filter(SafeTransaction.date >= datetime.strptime(start_date, '%Y-%m-%d').date())
+    if end_date:
+        query = query.filter(SafeTransaction.date <= datetime.strptime(end_date, '%Y-%m-%d').date())
+
+    transactions = query.order_by(SafeTransaction.date.asc(), SafeTransaction.id.asc()).all()
+    collected_money = [_build_collected_money_entry(txn) for txn in transactions]
+    return _filter_collected_money_by_customer_type(collected_money, customer_type)
+
+
+def _compute_collected_money_usd_total(collected_money, market_id):
+    """Approximate USD total using Safe Statement rates per transaction date."""
+    if not collected_money:
+        return 0.0
+    dates = [
+        datetime.strptime(item['date'], '%Y-%m-%d').date()
+        for item in collected_money
+    ]
+    rates_map = _get_currency_rates_for_dates(market_id, dates)
+    total_usd = Decimal('0')
+    for item in collected_money:
+        usd_rate, _ = _resolve_usd_rate(item['date'], rates_map)
+        total_usd += Decimal(str(_approx_usd_amount(item['amount'], usd_rate)))
+    return float(total_usd)
+
+
+def _group_collected_money(collected_money, group_by):
+    total_collected = sum(Decimal(str(item['amount'])) for item in collected_money)
+
+    if group_by == 'date':
+        grouped = {}
+        for item in collected_money:
+            date = item['date']
+            if date not in grouped:
+                grouped[date] = {'date': date, 'items': [], 'total': Decimal('0')}
+            grouped[date]['items'].append(item)
+            grouped[date]['total'] += Decimal(str(item['amount']))
+
+        grouped_list = [
+            {'date': data['date'], 'total': float(data['total']), 'items': data['items']}
+            for date in sorted(grouped.keys())
+            for data in [grouped[date]]
+        ]
+        return {
+            'total_collected': float(total_collected),
+            'grouped_by': 'date',
+            'data': grouped_list,
+        }
+
+    if group_by == 'customer':
+        grouped = {}
+        for item in collected_money:
+            customer = item['customer_name'] or item['source_name'] or 'Unknown'
+            if customer not in grouped:
+                grouped[customer] = {'customer_name': customer, 'items': [], 'total': Decimal('0')}
+            grouped[customer]['items'].append(item)
+            grouped[customer]['total'] += Decimal(str(item['amount']))
+
+        grouped_list = [
+            {'customer_name': data['customer_name'], 'total': float(data['total']), 'items': data['items']}
+            for customer in sorted(grouped.keys())
+            for data in [grouped[customer]]
+        ]
+        return {
+            'total_collected': float(total_collected),
+            'grouped_by': 'customer',
+            'data': grouped_list,
+        }
+
+    return {
+        'total_collected': float(total_collected),
+        'grouped_by': 'none',
+        'data': collected_money,
+    }
+
+
 @bp.route('/collected-money-report', methods=['GET'])
 @login_required
 def get_collected_money_report():
@@ -451,133 +612,12 @@ def get_collected_money_report():
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
     group_by = request.args.get('group_by', 'date')  # 'date', 'customer', or 'none'
-    
-    # Get all inflow transactions
-    query = SafeTransaction.query.filter_by(
-        market_id=market_id,
-        transaction_type='Inflow'
-    )
-    
-    if start_date:
-        query = query.filter(SafeTransaction.date >= datetime.strptime(start_date, '%Y-%m-%d').date())
-    if end_date:
-        query = query.filter(SafeTransaction.date <= datetime.strptime(end_date, '%Y-%m-%d').date())
-    
-    transactions = query.order_by(SafeTransaction.date.asc(), SafeTransaction.id.asc()).all()
-    
-    # Build detailed transaction list
-    collected_money = []
-    total_collected = Decimal('0')
-    
-    for txn in transactions:
-        source_type = 'Other'
-        source_name = None
-        invoice_number = None
-        customer_name = None
-        
-        # Determine source
-        if txn.payment_id:
-            payment = Payment.query.get(txn.payment_id)
-            if payment:
-                if payment.loan:
-                    source_type = 'Loan'
-                    source_name = payment.company.name if payment.company else 'Unknown'
-                else:
-                    source_type = 'Payment'
-                    source_name = payment.company.name if payment.company else 'Unknown'
-                    if payment.sale_id:
-                        sale = Sale.query.get(payment.sale_id)
-                        if sale:
-                            invoice_number = sale.invoice_number
-                            customer_name = sale.customer.name if sale.customer else None
-        
-        elif txn.sale_id:
-            sale = Sale.query.get(txn.sale_id)
-            if sale:
-                source_type = 'Cash Sale'
-                source_name = sale.customer.name if sale.customer else 'Unknown'
-                invoice_number = sale.invoice_number
-                customer_name = sale.customer.name if sale.customer else None
-        
-        amount = txn.amount_base_currency_stored if txn.amount_base_currency_stored else txn.amount_base_currency
-        total_collected += amount
-        
-        collected_money.append({
-            'date': txn.date.isoformat(),
-            'source_type': source_type,
-            'source_name': source_name or 'Unknown',
-            'customer_name': customer_name,
-            'invoice_number': invoice_number,
-            'description': txn.description or '',
-            'amount': float(amount),
-            'currency': txn.currency,
-            'exchange_rate': float(txn.exchange_rate)
-        })
-    
-    # Group if requested
-    if group_by == 'date':
-        grouped = {}
-        for item in collected_money:
-            date = item['date']
-            if date not in grouped:
-                grouped[date] = {
-                    'date': date,
-                    'items': [],
-                    'total': Decimal('0')
-                }
-            grouped[date]['items'].append(item)
-            grouped[date]['total'] += Decimal(str(item['amount']))
-        
-        grouped_list = []
-        for date in sorted(grouped.keys()):
-            data = grouped[date]
-            grouped_list.append({
-                'date': data['date'],
-                'total': float(data['total']),
-                'items': data['items']
-            })
-        
-        return jsonify({
-            'total_collected': float(total_collected),
-            'grouped_by': 'date',
-            'data': grouped_list
-        })
-    
-    elif group_by == 'customer':
-        grouped = {}
-        for item in collected_money:
-            customer = item['customer_name'] or item['source_name'] or 'Unknown'
-            if customer not in grouped:
-                grouped[customer] = {
-                    'customer_name': customer,
-                    'items': [],
-                    'total': Decimal('0')
-                }
-            grouped[customer]['items'].append(item)
-            grouped[customer]['total'] += Decimal(str(item['amount']))
-        
-        grouped_list = []
-        for customer in sorted(grouped.keys()):
-            data = grouped[customer]
-            grouped_list.append({
-                'customer_name': data['customer_name'],
-                'total': float(data['total']),
-                'items': data['items']
-            })
-        
-        return jsonify({
-            'total_collected': float(total_collected),
-            'grouped_by': 'customer',
-            'data': grouped_list
-        })
-    
-    else:
-        # No grouping
-        return jsonify({
-            'total_collected': float(total_collected),
-            'grouped_by': 'none',
-            'data': collected_money
-        })
+    customer_type = request.args.get('customer_type', 'both')  # 'both', 'cash', or 'credit'
+
+    collected_money = _fetch_collected_money(market_id, start_date, end_date, customer_type)
+    result = _group_collected_money(collected_money, group_by)
+    result['total_usd_amount'] = _compute_collected_money_usd_total(collected_money, market_id)
+    return jsonify(result)
 
 @bp.route('/collected-money-report/export', methods=['GET'])
 @login_required
@@ -589,63 +629,22 @@ def export_collected_money_report():
     
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
-    group_by = request.args.get('group_by', 'date')
-    
-    # Get data using the same logic as the report endpoint
-    query = SafeTransaction.query.filter_by(
-        market_id=market_id,
-        transaction_type='Inflow'
-    )
-    
-    if start_date:
-        query = query.filter(SafeTransaction.date >= datetime.strptime(start_date, '%Y-%m-%d').date())
-    if end_date:
-        query = query.filter(SafeTransaction.date <= datetime.strptime(end_date, '%Y-%m-%d').date())
-    
-    transactions = query.order_by(SafeTransaction.date.asc(), SafeTransaction.id.asc()).all()
-    
-    # Build export data
-    export_data = []
-    for txn in transactions:
-        source_type = 'Other'
-        source_name = None
-        invoice_number = None
-        customer_name = None
-        
-        if txn.payment_id:
-            payment = Payment.query.get(txn.payment_id)
-            if payment:
-                if payment.loan:
-                    source_type = 'Loan'
-                    source_name = payment.company.name if payment.company else 'Unknown'
-                else:
-                    source_type = 'Payment'
-                    source_name = payment.company.name if payment.company else 'Unknown'
-                    if payment.sale_id:
-                        sale = Sale.query.get(payment.sale_id)
-                        if sale:
-                            invoice_number = sale.invoice_number
-                            customer_name = sale.customer.name if sale.customer else None
-        elif txn.sale_id:
-            sale = Sale.query.get(txn.sale_id)
-            if sale:
-                source_type = 'Cash Sale'
-                source_name = sale.customer.name if sale.customer else 'Unknown'
-                invoice_number = sale.invoice_number
-                customer_name = sale.customer.name if sale.customer else None
-        
-        amount = txn.amount_base_currency_stored if txn.amount_base_currency_stored else txn.amount_base_currency
-        
-        export_data.append({
-            'Date': txn.date.isoformat(),
-            'Source Type': source_type,
-            'Source/Customer': source_name or customer_name or 'Unknown',
-            'Invoice Number': invoice_number or '',
-            'Description': txn.description or '',
-            'Amount': float(amount),
-            'Currency': txn.currency,
-            'Exchange Rate': float(txn.exchange_rate)
-        })
+    customer_type = request.args.get('customer_type', 'both')
+
+    collected_money = _fetch_collected_money(market_id, start_date, end_date, customer_type)
+    export_data = [
+        {
+            'Date': item['date'],
+            'Source Type': item['source_type'],
+            'Source/Customer': item['source_name'] or item['customer_name'] or 'Unknown',
+            'Invoice Number': item['invoice_number'] or '',
+            'Description': item['description'],
+            'Amount': item['amount'],
+            'Currency': item['currency'],
+            'Exchange Rate': item['exchange_rate'],
+        }
+        for item in collected_money
+    ]
     
     # Create Excel file
     output = BytesIO()

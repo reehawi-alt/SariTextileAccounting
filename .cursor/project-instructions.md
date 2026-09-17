@@ -157,3 +157,35 @@ Why this approach was chosen
 What alternatives exist
 
 Trade-offs involved
+
+---
+
+## Bulk sale-line catalog repoint (“OPERATION RECORD EDIT 369”)
+
+**Trigger phrase (optional):** user may start with: `CALL OPERATION RECORD EDIT 369` (or “operation 369”) so the agent uses this playbook instead of guessing ranges or consecutive slices.
+
+This documents the **safe** pattern used for repointing specific **sale** lines from one catalog item to another (e.g. wrong item code on selected invoices only).
+
+### What to collect from the user
+
+1. **Market** — name as in `markets` (e.g. `TANZANYA ( YASSER ) `) or `market_id` after confirming in DB.
+2. **Source and target items** — `items.id` or exact `items.code` in that market (and supplier if codes repeat).
+3. **Exact line list** — for each row: `invoice_number`, `quantity`, `total_price` (invoice currency line total). Optionally `date` for human cross-check only; matching is **not** by date alone.
+4. **Control totals** — user should state: number of lines, sum of quantities, sum of line totals (e.g. TZS); the script must **assert** these before `commit`.
+
+### Algorithm (required)
+
+- Resolve `Sale` by `market_id` + `invoice_number` for each row.
+- Find the `SaleItem` to change by matching **both** `quantity` and `total_price` to the table (plus existing `item_id` = old item when ambiguous). Use a small money tolerance only if needed (e.g. ±0.5 on total).
+- **Do not** update lines on the same invoice that are not in the table (some invoices have two lines with the same catalog item id at different prices).
+- Update: `sale_items.item_id` → new item; if `line_description` contains the old code string, replace with the new code string.
+- **Abort** with a clear error if any row cannot be matched exactly (no partial commits).
+
+### After the update
+
+- Re-verify by re-querying: for each `(invoice, qty, total)` in the table, exactly one `SaleItem` exists with `item_id` = new item and matching amounts; control totals must match.
+- **FIFO note:** `sale_item_allocations` may still reference batches tied to the **old** item; display and invoice lines follow the new item, but COGS/FIFO consistency may need a separate review.
+
+### Implementation template
+
+- Maintain a **one-off script** under `scripts/` (e.g. `scripts/update_hard_toys_45_lines.py`) with: `EXPECTED = [(invoice, qty, total), ...]`, `sys.path` to project root, pre-commit asserts, and transactional `commit` only on full success. Reuse/copy that file per batch and change the tuples + item ids + codes.

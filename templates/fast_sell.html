@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}Fast Sell - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Fast Sell</h1>
+    <div class="action-buttons">
+        <button type="button" class="btn btn-secondary" onclick="exportFastSales()">Export to Excel</button>
+        <button type="button" class="btn btn-secondary" onclick="openFastImportModal()">Import from Excel</button>
+        <button type="button" class="btn btn-primary" onclick="openAddFastSaleModal()">+ Add Fast Sale</button>
+    </div>
+</div>
+
+<p style="color:#666; margin-bottom:16px; max-width: 900px;">
+    Record sales <strong>without catalog items</strong> (description-only lines). Optional supplier. COGS in profit reports is treated as zero for these lines until you use catalog sales with purchases.
+    Use <a href="{{ url_for('sales_page') }}">Sales</a> for normal item-based invoices and catalog Excel import.
+</p>
+
+<div class="filters">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Start Date</label>
+            <input type="date" id="fastFilterStartDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>End Date</label>
+            <input type="date" id="fastFilterEndDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>Customer</label>
+            <select id="fastFilterCustomer" class="form-control">
+                <option value="">All Customers</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Supplier</label>
+            <select id="fastFilterSupplier" class="form-control">
+                <option value="">All Suppliers</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <button type="button" class="btn btn-primary" onclick="loadFastSales()">Apply</button>
+            <button type="button" class="btn btn-secondary" onclick="clearFastFilters()">Clear</button>
+        </div>
+    </div>
+</div>
+
+<div class="table-container">
+    <table id="fastSalesTable">
+        <thead>
+            <tr>
+                <th>Invoice No</th>
+                <th>Date</th>
+                <th>Customer</th>
+                <th>Supplier</th>
+                <th>Total</th>
+                <th>Paid</th>
+                <th>Balance</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="fastSalesTableBody">
+            <tr><td colspan="10" class="empty-state"><div class="spinner"></div>Loading…</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Add/Edit modal -->
+<div id="fastSaleModal" class="modal">
+    <div class="modal-content" style="max-width: 640px;">
+        <span class="close" onclick="closeFastSaleModal()">&times;</span>
+        <h2 id="fastModalTitle">Add Fast Sale</h2>
+        <form id="fastSaleForm">
+            <input type="hidden" id="fastSaleId">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Date *</label>
+                    <input type="date" id="fastSaleDate" required class="form-control">
+                </div>
+                <div class="form-group">
+                    <label>Customer *</label>
+                    <select id="fastSaleCustomer" required class="form-control">
+                        <option value="">Select Customer</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Supplier <span style="color:#888;font-weight:normal;">(optional)</span></label>
+                <select id="fastSaleSupplier" class="form-control">
+                    <option value="">— None —</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Lines * <span style="color:#888;font-weight:normal;">(description, qty, unit price)</span></label>
+                <div id="fastSaleLines"></div>
+                <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="addFastLineRow()">+ Add line</button>
+            </div>
+            <div class="form-group">
+                <label>Total</label>
+                <input type="text" id="fastSaleTotal" readonly class="form-control" style="font-weight:600;">
+            </div>
+            <div class="form-group">
+                <label>Paid amount</label>
+                <input type="number" id="fastSalePaidAmount" step="0.01" min="0" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Balance</label>
+                <input type="text" id="fastSaleBalance" readonly class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Notes</label>
+                <textarea id="fastSaleNotes" rows="2" class="form-control"></textarea>
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Save</button>
+                <button type="button" class="btn btn-secondary" onclick="closeFastSaleModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Import -->
+<div id="fastImportModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeFastImportModal()">&times;</span>
+        <h2>Import fast sales (Excel)</h2>
+        <p style="color:#666;margin-bottom:10px;">
+            Columns: <strong>Date</strong>, <strong>Customer</strong>, <strong>LineDescription</strong>, <strong>Quantity</strong>, <strong>UnitPrice</strong>.
+            Optional: <strong>Supplier</strong>, <strong>Notes</strong>. Do not use ItemCode (use Sales page for catalog import).
+        </p>
+        <form id="fastImportForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label>Excel file *</label>
+                <input type="file" id="fastExcelFile" accept=".xlsx,.xls" required class="form-control">
+            </div>
+            <div class="action-buttons">
+                <button type="submit" class="btn btn-primary">Import</button>
+                <button type="button" class="btn btn-secondary" onclick="closeFastImportModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Invoice -->
+<div id="fastInvoiceModal" class="modal">
+    <div class="modal-content" style="max-width: 900px;">
+        <span class="close" onclick="closeFastInvoiceModal()">&times;</span>
+        <div id="fastInvoiceContent" style="background: white; padding: 30px; border-radius: 5px;"></div>
+        <div class="action-buttons" style="margin-top: 20px; text-align: center;">
+            <button type="button" class="btn btn-primary" onclick="printFastInvoice()">Print</button>
+            <button type="button" class="btn btn-secondary" onclick="closeFastInvoiceModal()">Close</button>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/fast_sell.js') }}"></script>
+{% endblock %}

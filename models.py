@@ -4,7 +4,7 @@ Database models for the accounting system
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 
 db = SQLAlchemy()
 
@@ -35,6 +35,8 @@ class Market(db.Model):
     address = db.Column(db.Text)
     base_currency = db.Column(db.String(10), nullable=False)
     calculation_method = db.Column(db.String(20), default='Average', nullable=False)  # 'Average' or 'FIFO'
+    notes = db.Column(db.Text)  # General sticky notes for this market (dashboard)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -44,6 +46,78 @@ class Market(db.Model):
     sales = db.relationship('Sale', backref='market', lazy=True, cascade='all, delete-orphan')
     safe_transactions = db.relationship('SafeTransaction', backref='market', lazy=True, cascade='all, delete-orphan')
     general_expenses = db.relationship('GeneralExpense', backref='market', lazy=True, cascade='all, delete-orphan')
+    sticky_notes = db.relationship(
+        'MarketStickyNote', backref='market', lazy=True, cascade='all, delete-orphan'
+    )
+    partners = db.relationship(
+        'MarketPartner', backref='market', lazy=True, cascade='all, delete-orphan'
+    )
+    partner_drawings = db.relationship(
+        'PartnerDrawing', backref='market', lazy=True, cascade='all, delete-orphan'
+    )
+    purchasing_representatives = db.relationship(
+        'PurchasingRepresentative', backref='market', lazy=True, cascade='all, delete-orphan'
+    )
+
+
+class PurchasingRepresentative(db.Model):
+    """Optional purchasing agents who collect goods (used only in some markets)."""
+    __tablename__ = 'purchasing_representatives'
+    id = db.Column(db.Integer, primary_key=True)
+    market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
+    name = db.Column(db.String(200), nullable=False)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MarketPartner(db.Model):
+    """Equity partners for a market: profit-share % (should sum to 100 per market)."""
+    __tablename__ = 'market_partners'
+    id = db.Column(db.Integer, primary_key=True)
+    market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
+    name = db.Column(db.String(200), nullable=False)
+    share_percent = db.Column(db.Numeric(5, 2), nullable=False)  # e.g. 50.00
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PartnerDrawing(db.Model):
+    """Partner cash drawings (withdrawals). Each debits the safe like a general expense."""
+    __tablename__ = 'partner_drawings'
+    id = db.Column(db.Integer, primary_key=True)
+    market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
+    partner_id = db.Column(db.Integer, db.ForeignKey('market_partners.id'), nullable=False)
+    date = db.Column(db.Date, nullable=False, default=datetime.utcnow)
+    description = db.Column(db.Text, nullable=False)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    currency = db.Column(db.String(10), nullable=False)
+    exchange_rate = db.Column(db.Numeric(10, 4), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    partner = db.relationship('MarketPartner', backref='drawings')
+    safe_transaction = db.relationship(
+        'SafeTransaction',
+        foreign_keys='SafeTransaction.partner_drawing_id',
+        backref=db.backref('partner_drawing', uselist=False),
+        uselist=False,
+    )
+
+    @property
+    def amount_base_currency(self):
+        return self.amount * self.exchange_rate
+
+
+class MarketStickyNote(db.Model):
+    """Per-market sticky notes (Windows-style cards on Market Notes page)."""
+    __tablename__ = 'market_sticky_notes'
+    id = db.Column(db.Integer, primary_key=True)
+    market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
+    body = db.Column(db.Text, nullable=False, default='')
+    tint = db.Column(db.Integer, nullable=False, default=0)  # 0–5 palette index
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Company(db.Model):
     __tablename__ = 'companies'
@@ -93,6 +167,14 @@ class Company(db.Model):
             payments = [p for p in all_payments if p.loan is not True]
             total_debit += sum(p.amount for p in loans)  # Use original currency, not base currency
             total_credit = sum(p.amount for p in payments)  # Use original currency, not base currency
+            returns_sum = db.session.query(
+                func.coalesce(func.sum(SupplierReturnLine.total_price), 0)
+            ).join(SupplierReturn, SupplierReturnLine.supplier_return_id == SupplierReturn.id).filter(
+                SupplierReturn.market_id == market_id,
+                SupplierReturn.supplier_id == self.id,
+            ).scalar()
+            if returns_sum:
+                total_credit += Decimal(str(returns_sum))
         elif self.category == 'Service Company':
             total_debit = sum(p.expense2_base_currency for p in PurchaseContainer.query.filter_by(
                 market_id=market_id, expense2_service_company_id=self.id
@@ -154,6 +236,7 @@ class PurchaseContainer(db.Model):
     market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
     container_number = db.Column(db.String(100), nullable=False)
     supplier_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False)
+    representative_id = db.Column(db.Integer, db.ForeignKey('purchasing_representatives.id'), nullable=True)
     currency = db.Column(db.String(10), nullable=False)
     exchange_rate = db.Column(db.Numeric(10, 4), nullable=False)
     date = db.Column(db.Date, nullable=False, default=datetime.utcnow)
@@ -173,12 +256,18 @@ class PurchaseContainer(db.Model):
     
     # Relationships
     items = db.relationship('PurchaseItem', backref='container', lazy=True, cascade='all, delete-orphan')
+    representative = db.relationship('PurchasingRepresentative', backref='purchase_containers')
     
     @property
     def total_amount(self):
         """Total amount of items only (excludes expense1, which is shown separately)"""
         items_total = sum(item.total_price for item in self.items)
         return items_total
+
+    @property
+    def total_amount_base_currency(self):
+        """Items total converted to market base currency."""
+        return (self.total_amount or Decimal('0')) * (self.exchange_rate or Decimal('1'))
     
     @property
     def expense1_base_currency(self):
@@ -249,7 +338,8 @@ class SaleItem(db.Model):
     __tablename__ = 'sale_items'
     id = db.Column(db.Integer, primary_key=True)
     sale_id = db.Column(db.Integer, db.ForeignKey('sales.id'), nullable=False)
-    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=True)  # null = fast-sell / non-catalog line
+    line_description = db.Column(db.Text, nullable=True)  # required in app logic when item_id is null
     quantity = db.Column(db.Numeric(10, 2), nullable=False)
     unit_price = db.Column(db.Numeric(10, 2), nullable=False)
     total_price = db.Column(db.Numeric(10, 2), nullable=False)
@@ -260,6 +350,7 @@ class Payment(db.Model):
     market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
     company_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False)
     sale_id = db.Column(db.Integer, db.ForeignKey('sales.id'), nullable=True)
+    purchase_container_id = db.Column(db.Integer, db.ForeignKey('purchase_containers.id'), nullable=True)
     payment_type = db.Column(db.String(20), nullable=False)  # In (from customer), Out (to supplier/service)
     amount = db.Column(db.Numeric(10, 2), nullable=False)
     currency = db.Column(db.String(10), nullable=False)
@@ -268,7 +359,15 @@ class Payment(db.Model):
     date = db.Column(db.Date, nullable=False, default=datetime.utcnow)
     notes = db.Column(db.Text)
     loan = db.Column(db.Boolean, default=False)  # True if this is a loan/borrowing transaction
+    proof_filename = db.Column(db.String(255), nullable=True)  # Stored file on disk
+    proof_original_filename = db.Column(db.String(255), nullable=True)  # Original upload name
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    purchase_container = db.relationship(
+        'PurchaseContainer',
+        backref=db.backref('auto_cash_payments', lazy=True),
+        foreign_keys=[purchase_container_id],
+    )
     
     @property
     def amount_base_currency(self):
@@ -296,6 +395,7 @@ class SafeTransaction(db.Model):
     payment_id = db.Column(db.Integer, db.ForeignKey('payments.id'), nullable=True)
     sale_id = db.Column(db.Integer, db.ForeignKey('sales.id'), nullable=True)
     general_expense_id = db.Column(db.Integer, db.ForeignKey('general_expenses.id'), nullable=True)
+    partner_drawing_id = db.Column(db.Integer, db.ForeignKey('partner_drawings.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Calculated balance after this transaction
@@ -337,6 +437,7 @@ class SafeStatementRealBalance(db.Model):
     market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
     date = db.Column(db.Date, nullable=False)
     real_balance = db.Column(db.Numeric(10, 2), nullable=True)  # Nullable for dates without manual entry
+    currency_rate = db.Column(db.Numeric(12, 4), nullable=True)  # Manual FX rate for dashboard USD column (base per USD)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -409,3 +510,54 @@ class SaleItemAllocation(db.Model):
     sale_item = db.relationship('SaleItem', backref='allocations')
     batch = db.relationship('InventoryBatch', backref='allocations')
 
+
+class SupplierReturn(db.Model):
+    """Goods returned to a supplier — reduces stock and supplier payable (credit memo)."""
+    __tablename__ = 'supplier_returns'
+    id = db.Column(db.Integer, primary_key=True)
+    market_id = db.Column(db.Integer, db.ForeignKey('markets.id'), nullable=False)
+    supplier_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False)
+    date = db.Column(db.Date, nullable=False, default=datetime.utcnow)
+    reference_number = db.Column(db.String(100))  # Optional external / internal reference
+    currency = db.Column(db.String(10), nullable=False)
+    exchange_rate = db.Column(db.Numeric(10, 4), nullable=False, default=1)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    supplier = db.relationship('Company', foreign_keys=[supplier_id], backref='supplier_returns')
+    market = db.relationship('Market', backref='supplier_returns')
+    lines = db.relationship(
+        'SupplierReturnLine',
+        backref='supplier_return',
+        lazy=True,
+        cascade='all, delete-orphan',
+    )
+
+
+class SupplierReturnLine(db.Model):
+    __tablename__ = 'supplier_return_lines'
+    id = db.Column(db.Integer, primary_key=True)
+    supplier_return_id = db.Column(db.Integer, db.ForeignKey('supplier_returns.id'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
+    quantity = db.Column(db.Numeric(10, 2), nullable=False)
+    unit_price = db.Column(db.Numeric(10, 2), nullable=False)
+    total_price = db.Column(db.Numeric(10, 2), nullable=False)
+
+    item = db.relationship('Item', backref='supplier_return_lines')
+    allocations = db.relationship(
+        'SupplierReturnAllocation',
+        backref='supplier_return_line',
+        lazy=True,
+        cascade='all, delete-orphan',
+    )
+
+
+class SupplierReturnAllocation(db.Model):
+    """FIFO batch slices removed by a supplier return (for reversal on delete)."""
+    __tablename__ = 'supplier_return_allocations'
+    id = db.Column(db.Integer, primary_key=True)
+    supplier_return_line_id = db.Column(db.Integer, db.ForeignKey('supplier_return_lines.id'), nullable=False)
+    batch_id = db.Column(db.Integer, db.ForeignKey('inventory_batches.id'), nullable=False)
+    quantity = db.Column(db.Numeric(10, 2), nullable=False)
+
+    batch = db.relationship('InventoryBatch', backref='supplier_return_allocations')

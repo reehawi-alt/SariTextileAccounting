@@ -1,16 +1,57 @@
 """
 Sales API endpoints
 """
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, send_file
 from flask_login import login_required
-from models import db, Sale, SaleItem, Item, Company, Market, SafeTransaction, Payment
+from models import db, Sale, SaleItem, SaleItemAllocation, Item, Company, Market, SafeTransaction, Payment
 from decimal import Decimal
 from datetime import datetime
 import random
 import pandas as pd
 from io import BytesIO
+from openpyxl.utils import get_column_letter
+from sqlalchemy import exists, and_
+from sqlalchemy.orm import joinedload
 
 bp = Blueprint('sales', __name__)
+
+def _serialize_sale_item_row(si):
+    row = {
+        'id': si.id,
+        'item_id': si.item_id,
+        'line_description': si.line_description,
+        'quantity': float(si.quantity),
+        'unit_price': float(si.unit_price),
+        'total_price': float(si.total_price),
+    }
+    if si.item_id and getattr(si, 'item', None) is not None:
+        row['item_code'] = si.item.code
+        row['item_name'] = si.item.name
+    else:
+        row['item_code'] = '—'
+        row['item_name'] = (si.line_description or '').strip() or '—'
+    return row
+
+def _parse_sale_line_payload(item_data):
+    """Returns dict with item_id, line_description, quantity, unit_price, total_price or raises ValueError."""
+    if 'quantity' not in item_data or 'unit_price' not in item_data:
+        raise ValueError('Each line must have quantity and unit_price')
+    qty = Decimal(str(item_data['quantity']))
+    price = Decimal(str(item_data['unit_price']))
+    if qty <= 0:
+        raise ValueError('Quantity must be greater than 0')
+    if price < 0:
+        raise ValueError('Unit price cannot be negative')
+    total = qty * price
+    raw_id = item_data.get('item_id')
+    line_desc_raw = item_data.get('line_description')
+    line_desc = line_desc_raw.strip() if isinstance(line_desc_raw, str) else ''
+    if raw_id is not None and str(raw_id).strip() != '':
+        item_id = int(raw_id)
+        return {'item_id': item_id, 'line_description': None, 'quantity': qty, 'unit_price': price, 'total_price': total}
+    if line_desc:
+        return {'item_id': None, 'line_description': line_desc, 'quantity': qty, 'unit_price': price, 'total_price': total}
+    raise ValueError('Each line must have item_id or line_description')
 
 def generate_invoice_number(market_id):
     """Generate unique invoice number: SAL-YYYYMMDD-XXX"""
@@ -38,6 +79,7 @@ def get_sales():
     supplier_id = request.args.get('supplier_id', type=int)
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
+    fast_only = request.args.get('fast_only') == '1'
     
     query = Sale.query.filter_by(market_id=market_id)
     
@@ -49,15 +91,23 @@ def get_sales():
         query = query.filter(Sale.date >= datetime.strptime(start_date, '%Y-%m-%d').date())
     if end_date:
         query = query.filter(Sale.date <= datetime.strptime(end_date, '%Y-%m-%d').date())
+    if fast_only:
+        query = query.filter(
+            exists().where(and_(SaleItem.sale_id == Sale.id, SaleItem.item_id.is_(None)))
+        )
     
-    sales = query.order_by(Sale.date.desc(), Sale.invoice_number.desc()).all()
+    sales = query.options(joinedload(Sale.items)).order_by(Sale.date.desc(), Sale.invoice_number.desc()).all()
     
     # Get supplier names in bulk
     supplier_ids = [s.supplier_id for s in sales if s.supplier_id]
     suppliers = {sup.id: sup.name for sup in Company.query.filter(Company.id.in_(supplier_ids)).all()} if supplier_ids else {}
     
-    # Calculate total amount of filtered sales
+    # Calculate total amount and line quantities of filtered sales
     total_amount = sum(s.total_amount for s in sales)
+    total_quantity = Decimal('0')
+    for s in sales:
+        for si in (s.items or []):
+            total_quantity += Decimal(str(si.quantity))
     
     return jsonify({
         'sales': [{
@@ -73,9 +123,11 @@ def get_sales():
             'balance': float(s.balance),
             'payment_type': s.payment_type,
             'status': s.status,
-            'notes': s.notes
+            'notes': s.notes,
+            'has_fast_lines': any(i.item_id is None for i in (s.items or []))
         } for s in sales],
         'total_amount': float(total_amount),
+        'total_quantity': float(total_quantity),
         'count': len(sales)
     })
 
@@ -104,12 +156,17 @@ def create_sale():
         # Generate invoice number
         invoice_number = generate_invoice_number(market_id)
         
-        # Calculate total
+        # Calculate total and validate lines (catalog item_id or fast line_description)
         total_amount = Decimal('0')
+        line_payloads = []
         for item_data in data['items']:
-            if 'quantity' not in item_data or 'unit_price' not in item_data:
-                return jsonify({'error': 'Each item must have quantity and unit_price'}), 400
-            total_amount += Decimal(str(item_data['quantity'])) * Decimal(str(item_data['unit_price']))
+            try:
+                pl = _parse_sale_line_payload(item_data)
+            except ValueError as e:
+                db.session.rollback()
+                return jsonify({'error': str(e)}), 400
+            total_amount += pl['total_price']
+            line_payloads.append(pl)
         
         # Get customer and validate
         customer = Company.query.get(data['customer_id'])
@@ -164,23 +221,19 @@ def create_sale():
         db.session.flush()
         
         # Add items
-        for item_data in data['items']:
-            if 'item_id' not in item_data:
-                db.session.rollback()
-                return jsonify({'error': 'Each item must have item_id'}), 400
-            
-            # Validate item exists
-            item = Item.query.get(item_data['item_id'])
-            if not item:
-                db.session.rollback()
-                return jsonify({'error': f'Item with id {item_data["item_id"]} not found'}), 404
-            
+        for pl in line_payloads:
+            if pl['item_id'] is not None:
+                item = Item.query.get(pl['item_id'])
+                if not item:
+                    db.session.rollback()
+                    return jsonify({'error': f'Item with id {pl["item_id"]} not found'}), 404
             sale_item = SaleItem(
                 sale_id=sale.id,
-                item_id=item_data['item_id'],
-                quantity=Decimal(str(item_data['quantity'])),
-                unit_price=Decimal(str(item_data['unit_price'])),
-                total_price=Decimal(str(item_data['quantity'])) * Decimal(str(item_data['unit_price']))
+                item_id=pl['item_id'],
+                line_description=pl['line_description'],
+                quantity=pl['quantity'],
+                unit_price=pl['unit_price'],
+                total_price=pl['total_price']
             )
             db.session.add(sale_item)
         
@@ -232,9 +285,10 @@ def create_sale():
                 sale.balance = total_amount - payment_amount
                 sale.status = 'Paid' if payment_amount >= total_amount else 'Partial'
             
-            # If cash sale, also record in safe (only the paid_amount, not the total_amount)
-            # The balance (total_amount - paid_amount) remains as receivable and doesn't go into safe
-            if payment_type == 'Cash':
+            # Record money collected in safe (initial payment): cash or credit with partial/full pay at invoice time
+            # Collected Money report is driven by SafeTransaction Inflows, not Payment rows alone.
+            # The balance (total_amount - paid_amount) remains as receivable and is not cashed until paid.
+            if payment_amount > 0:
                 # Get last safe balance
                 last_transaction = SafeTransaction.query.filter_by(market_id=market_id).order_by(
                     SafeTransaction.date.desc(), SafeTransaction.id.desc()
@@ -259,6 +313,8 @@ def create_sale():
                 db.session.add(safe_transaction)
         
         db.session.commit()
+        from api.safe import recalc_safe_balances
+        recalc_safe_balances(market_id)
         
         # Allocate batches if FIFO is active
         market = Market.query.get(market_id)
@@ -304,20 +360,14 @@ def create_sale():
 @login_required
 def get_sale(sale_id):
     market_id = session.get('current_market_id')
-    sale = Sale.query.filter_by(id=sale_id, market_id=market_id).first()
+    sale = Sale.query.options(
+        joinedload(Sale.items).joinedload(SaleItem.item)
+    ).filter_by(id=sale_id, market_id=market_id).first()
     
     if not sale:
         return jsonify({'error': 'Sale not found'}), 404
     
-    items = [{
-        'id': i.id,
-        'item_id': i.item_id,
-        'item_code': i.item.code,
-        'item_name': i.item.name,
-        'quantity': float(i.quantity),
-        'unit_price': float(i.unit_price),
-        'total_price': float(i.total_price)
-    } for i in sale.items]
+    items = [_serialize_sale_item_row(i) for i in sale.items]
     
     # Get supplier name safely
     supplier_name = None
@@ -339,6 +389,7 @@ def get_sale(sale_id):
         'total_amount': float(sale.total_amount),
         'paid_amount': float(sale.paid_amount),
         'balance': float(sale.balance),
+        'customer_total_balance': float(sale.customer.get_balance(market_id)),
         'payment_type': sale.payment_type,
         'status': sale.status,
         'notes': sale.notes,
@@ -377,13 +428,20 @@ def update_sale(sale_id):
     
     # Update items if provided
     if 'items' in data:
-        # Delete existing items
+        old_item_ids = [x.id for x in SaleItem.query.filter_by(sale_id=sale_id).all()]
+        if old_item_ids:
+            SaleItemAllocation.query.filter(SaleItemAllocation.sale_item_id.in_(old_item_ids)).delete(synchronize_session=False)
         SaleItem.query.filter_by(sale_id=sale_id).delete()
         
-        # Calculate new total
         total_amount = Decimal('0')
+        line_payloads = []
         for item_data in data['items']:
-            total_amount += Decimal(str(item_data['quantity'])) * Decimal(str(item_data['unit_price']))
+            try:
+                pl = _parse_sale_line_payload(item_data)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            total_amount += pl['total_price']
+            line_payloads.append(pl)
         
         sale.total_amount = total_amount
     
@@ -431,22 +489,29 @@ def update_sale(sale_id):
             SafeTransaction.query.filter_by(payment_id=initial_payment.id).delete()
             db.session.delete(initial_payment)
     
-    # Add new items if items were updated
     if 'items' in data:
-        for item_data in data['items']:
-            item = SaleItem(
+        for pl in line_payloads:
+            if pl['item_id'] is not None:
+                cit = Item.query.get(pl['item_id'])
+                if not cit:
+                    return jsonify({'error': f'Item with id {pl["item_id"]} not found'}), 404
+            db.session.add(SaleItem(
                 sale_id=sale.id,
-                item_id=item_data['item_id'],
-                quantity=Decimal(str(item_data['quantity'])),
-                unit_price=Decimal(str(item_data['unit_price'])),
-                total_price=Decimal(str(item_data['quantity'])) * Decimal(str(item_data['unit_price']))
-            )
-            db.session.add(item)
+                item_id=pl['item_id'],
+                line_description=pl['line_description'],
+                quantity=pl['quantity'],
+                unit_price=pl['unit_price'],
+                total_price=pl['total_price']
+            ))
     
-    # Update SafeTransaction if it's a cash sale and (date, total, or paid_amount changed)
+    # Update SafeTransaction when date, total, or paid amount changes (cash or credit with initial collection)
     date_changed = sale.date != old_date
     total_changed = sale.total_amount != old_total
     paid_changed = sale.paid_amount != old_paid
+    
+    db.session.flush()
+    db.session.refresh(sale)
+    initial_payment = next((p for p in sale.payments if 'Initial payment' in (p.notes or '')), None)
     
     if sale.payment_type == 'Cash':
         safe_transaction = SafeTransaction.query.filter_by(sale_id=sale_id).first()
@@ -493,11 +558,55 @@ def update_sale(sale_id):
             )
             db.session.add(safe_transaction)
     
+    elif sale.payment_type == 'Credit' and initial_payment and sale.paid_amount > 0:
+        safe_transaction = SafeTransaction.query.filter_by(payment_id=initial_payment.id).first()
+        market = Market.query.get(market_id)
+        currency = initial_payment.currency or (market.base_currency if market else 'USD')
+        base_amt = initial_payment.amount_base_currency
+        if safe_transaction:
+            if date_changed:
+                safe_transaction.date = sale.date
+            if paid_changed or total_changed:
+                safe_transaction.amount = initial_payment.amount
+                safe_transaction.currency = currency
+                safe_transaction.exchange_rate = initial_payment.exchange_rate
+                safe_transaction.amount_base_currency_stored = base_amt
+                safe_transaction.description = (
+                    f'Sale {sale.invoice_number} (Collected: {sale.paid_amount}, Balance: {sale.balance})'
+                )
+                prev_transaction = SafeTransaction.query.filter(
+                    SafeTransaction.market_id == market_id,
+                    (SafeTransaction.date < sale.date)
+                    | ((SafeTransaction.date == sale.date) & (SafeTransaction.id < safe_transaction.id))
+                ).order_by(SafeTransaction.date.desc(), SafeTransaction.id.desc()).first()
+                balance_before = prev_transaction.balance_after if prev_transaction else Decimal('0')
+                safe_transaction.balance_after = balance_before + base_amt
+        else:
+            last_transaction = SafeTransaction.query.filter_by(market_id=market_id).order_by(
+                SafeTransaction.date.desc(), SafeTransaction.id.desc()
+            ).first()
+            balance_before = last_transaction.balance_after if last_transaction else Decimal('0')
+            balance_after = balance_before + base_amt
+            safe_transaction = SafeTransaction(
+                market_id=market_id,
+                transaction_type='Inflow',
+                amount=initial_payment.amount,
+                currency=currency,
+                exchange_rate=initial_payment.exchange_rate,
+                amount_base_currency_stored=base_amt,
+                date=sale.date,
+                description=f'Sale {sale.invoice_number} (Collected: {sale.paid_amount}, Balance: {sale.balance})',
+                sale_id=sale.id,
+                payment_id=initial_payment.id,
+                balance_after=balance_after
+            )
+            db.session.add(safe_transaction)
+    
     db.session.flush()
     
     # Recalculate safe balances after date or amount change
     # This ensures transactions are sorted correctly by date and balances are recalculated
-    if date_changed or total_changed:
+    if date_changed or total_changed or paid_changed:
         from api.safe import recalc_safe_balances
         recalc_safe_balances(market_id)
     else:
@@ -562,18 +671,321 @@ def get_sales_by_item():
     
     results = query.order_by(Sale.date.desc(), Sale.id.desc()).all()
     
-    return jsonify([{
-        'date': sale.date.isoformat(),
-        'invoice_number': sale.invoice_number,
-        'customer_name': sale.customer.name,
-        'item_code': item.item.code,
-        'item_name': item.item.name,
-        'quantity': float(item.quantity),
-        'unit_price': float(item.unit_price),
-        'total_price': float(item.total_price),
-        'payment_type': sale.payment_type,
-        'status': sale.status
-    } for item, sale in results])
+    out = []
+    for si, sale in results:
+        if si.item_id and si.item:
+            code, name = si.item.code, si.item.name
+        else:
+            code, name = '—', (si.line_description or '').strip() or '—'
+        out.append({
+            'date': sale.date.isoformat(),
+            'invoice_number': sale.invoice_number,
+            'customer_name': sale.customer.name,
+            'item_code': code,
+            'item_name': name,
+            'quantity': float(si.quantity),
+            'unit_price': float(si.unit_price),
+            'total_price': float(si.total_price),
+            'payment_type': sale.payment_type,
+            'status': sale.status
+        })
+    return jsonify(out)
+
+
+def _persist_imported_sale_with_items(market_id, sale_date, customer, supplier_id, notes, sale_items_payload):
+    """Create Sale, SaleItems (dicts with keys item_id, line_description, quantity, unit_price, total_price), Payment + Safe for cash. Commits transaction."""
+    invoice_number = generate_invoice_number(market_id)
+    total_amount = sum(Decimal(str(x['total_price'])) for x in sale_items_payload)
+    payment_type = customer.payment_type if customer else 'Cash'
+    if payment_type == 'Cash':
+        paid_amount = total_amount
+        status = 'Paid'
+    else:
+        paid_amount = Decimal('0')
+        status = 'Unpaid'
+    balance = total_amount - paid_amount
+
+    sale = Sale(
+        market_id=market_id,
+        invoice_number=invoice_number,
+        customer_id=customer.id,
+        supplier_id=supplier_id,
+        date=sale_date,
+        total_amount=total_amount,
+        paid_amount=paid_amount,
+        balance=balance,
+        payment_type=payment_type,
+        status=status,
+        notes=notes or ''
+    )
+    db.session.add(sale)
+    db.session.flush()
+
+    for sp in sale_items_payload:
+        db.session.add(SaleItem(
+            sale_id=sale.id,
+            item_id=sp.get('item_id'),
+            line_description=sp.get('line_description'),
+            quantity=Decimal(str(sp['quantity'])),
+            unit_price=Decimal(str(sp['unit_price'])),
+            total_price=Decimal(str(sp['total_price']))
+        ))
+
+    if paid_amount > 0 or payment_type == 'Cash':
+        payment_amount = paid_amount if paid_amount > 0 else total_amount
+        market = Market.query.get(market_id)
+        payment_currency = customer.currency or (market.base_currency if market else 'USD')
+        exchange_rate = Decimal('1')
+        amount_base_currency = payment_amount
+        payment = Payment(
+            market_id=market_id,
+            company_id=customer.id,
+            sale_id=sale.id,
+            payment_type='In',
+            amount=payment_amount,
+            currency=payment_currency,
+            exchange_rate=exchange_rate,
+            amount_base_currency_stored=amount_base_currency,
+            date=sale.date,
+            notes=f'Initial payment for invoice {invoice_number}',
+            loan=False
+        )
+        db.session.add(payment)
+        db.session.flush()
+
+        if payment_amount > 0:
+            last_transaction = SafeTransaction.query.filter_by(market_id=market_id).order_by(
+                SafeTransaction.date.desc(), SafeTransaction.id.desc()
+            ).first()
+            balance_before = last_transaction.balance_after if last_transaction else Decimal('0')
+            balance_after = balance_before + amount_base_currency
+            safe_transaction = SafeTransaction(
+                market_id=market_id,
+                transaction_type='Inflow',
+                amount=payment_amount,
+                currency=payment_currency,
+                exchange_rate=exchange_rate,
+                amount_base_currency_stored=amount_base_currency,
+                date=sale.date,
+                description=f'Sale {invoice_number} (Collected: {payment_amount}, Balance: {balance})',
+                sale_id=sale.id,
+                payment_id=payment.id,
+                balance_after=balance_after
+            )
+            db.session.add(safe_transaction)
+
+    db.session.commit()
+    from api.safe import recalc_safe_balances
+    recalc_safe_balances(market_id)
+
+    market = Market.query.get(market_id)
+    if market and getattr(market, 'calculation_method', 'Average') == 'FIFO':
+        from api.fifo_calculations import allocate_sale_item_fifo
+        sale_ref = Sale.query.get(sale.id)
+        for sale_item in sale_ref.items:
+            if sale_item.item_id is None:
+                continue
+            try:
+                allocate_sale_item_fifo(sale_item)
+            except Exception as e:
+                print(f"Warning: Could not allocate FIFO for sale item {sale_item.id}: {e}")
+
+
+@bp.route('/import-fast', methods=['POST'])
+@login_required
+def import_fast_sales():
+    """Import fast (non-catalog) sales: Date, Customer, LineDescription, Quantity, UnitPrice; optional Supplier, Notes."""
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    file = request.files['file']
+    if not file or file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+        return jsonify({'error': 'Invalid file type. Use .xlsx or .xls'}), 400
+
+    try:
+        file_content = file.read()
+        if file.filename.endswith('.xlsx'):
+            df = pd.read_excel(BytesIO(file_content), engine='openpyxl')
+        else:
+            df = pd.read_excel(BytesIO(file_content))
+    except Exception as e:
+        return jsonify({'error': f'Error reading Excel: {str(e)}'}), 400
+
+    if df.empty:
+        return jsonify({'error': 'Excel file is empty'}), 400
+
+    df.columns = df.columns.str.strip()
+    if 'ItemCode' in df.columns and df['ItemCode'].notna().any() and (df['ItemCode'].astype(str).str.strip() != '').any():
+        return jsonify({'error': 'Fast import must not use ItemCode. Use the Sales page import for catalog items.'}), 400
+
+    required = ['Date', 'Customer', 'LineDescription', 'Quantity', 'UnitPrice']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        return jsonify({'error': f'Missing columns: {", ".join(missing)}'}), 400
+
+    customers_by_name = {c.name: c for c in Company.query.filter_by(market_id=market_id, category='Customer').all()}
+    suppliers_by_name = {s.name: s for s in Company.query.filter_by(market_id=market_id, category='Supplier').all()}
+
+    df['Date'] = pd.to_datetime(df['Date']).dt.date
+
+    def norm_supplier(v):
+        if pd.isna(v) or str(v).strip() == '' or str(v).lower() == 'nan':
+           return ''
+        return str(v).strip()
+
+    df['_Sup'] = ''
+    if 'Supplier' in df.columns:
+        df['_Sup'] = df['Supplier'].apply(norm_supplier)
+    grouped = df.groupby(['Date', 'Customer', '_Sup'], dropna=False)
+
+    errors = []
+    sales_created = 0
+    items_created = 0
+
+    for group_key, group in grouped:
+        sale_date, customer_name, sup_key = group_key
+        customer_name = str(customer_name).strip()
+        customer = customers_by_name.get(customer_name)
+        if not customer:
+            errors.append(f'Date {sale_date}, Customer "{customer_name}": Customer not found')
+            continue
+
+        supplier_id = None
+        if sup_key:
+            sup = suppliers_by_name.get(sup_key)
+            if not sup:
+                errors.append(f'Date {sale_date}, Customer "{customer_name}": Supplier "{sup_key}" not found')
+                continue
+            supplier_id = sup.id
+
+        sale_items_payload = []
+        for idx, row in group.iterrows():
+            desc = row['LineDescription']
+            if pd.isna(desc) or str(desc).strip() == '':
+                errors.append(f'Date {sale_date}, Customer "{customer_name}": LineDescription required (row {idx + 2})')
+                continue
+            desc = str(desc).strip()
+
+            if pd.isna(row['Quantity']) or pd.isna(row['UnitPrice']):
+                errors.append(f'Date {sale_date}, Customer "{customer_name}": Missing quantity or price (row {idx + 2})')
+                continue
+            try:
+                qty = Decimal(str(row['Quantity']).strip())
+                price = Decimal(str(row['UnitPrice']).strip())
+            except Exception:
+                errors.append(f'Date {sale_date}, Customer "{customer_name}": Invalid quantity/price (row {idx + 2})')
+                continue
+            if qty <= 0:
+                errors.append(f'Date {sale_date}, Customer "{customer_name}": Quantity must be > 0 (row {idx + 2})')
+                continue
+            if price < 0:
+                errors.append(f'Date {sale_date}, Customer "{customer_name}": Price cannot be negative (row {idx + 2})')
+                continue
+
+            tp = qty * price
+            sale_items_payload.append({
+                'item_id': None,
+                'line_description': desc,
+                'quantity': qty,
+                'unit_price': price,
+                'total_price': tp
+            })
+
+        if not sale_items_payload:
+            errors.append(f'Date {sale_date}, Customer "{customer_name}": No valid lines')
+            continue
+
+        notes = ''
+        if 'Notes' in group.columns:
+            nl = group['Notes'].dropna().unique()
+            if len(nl) > 0:
+                ns = str(nl[0])
+                if ns and ns.lower() != 'nan':
+                    notes = ns.strip()
+
+        try:
+            _persist_imported_sale_with_items(
+                market_id, sale_date, customer, supplier_id, notes, sale_items_payload
+            )
+            sales_created += 1
+            items_created += len(sale_items_payload)
+        except Exception as e:
+            db.session.rollback()
+            errors.append(f'Date {sale_date}, Customer "{customer_name}": {str(e)}')
+
+    return jsonify({
+        'success': True,
+        'sales_created': sales_created,
+        'items_created': items_created,
+        'errors': errors
+    })
+
+
+@bp.route('/export', methods=['GET'])
+@login_required
+def export_sales_excel():
+    """Line-level export. fast_only=1 limits to non-catalog lines; columns match fast import template when fast_only."""
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+
+    customer_id = request.args.get('customer_id', type=int)
+    supplier_id = request.args.get('supplier_id', type=int)
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    fast_only = request.args.get('fast_only') == '1'
+
+    q = db.session.query(SaleItem, Sale).options(joinedload(SaleItem.item)).join(
+        Sale, SaleItem.sale_id == Sale.id
+    ).filter(Sale.market_id == market_id)
+    if fast_only:
+        q = q.filter(SaleItem.item_id.is_(None))
+    if customer_id:
+        q = q.filter(Sale.customer_id == customer_id)
+    if supplier_id:
+        q = q.filter(Sale.supplier_id == supplier_id)
+    if start_date:
+        q = q.filter(Sale.date >= datetime.strptime(start_date, '%Y-%m-%d').date())
+    if end_date:
+        q = q.filter(Sale.date <= datetime.strptime(end_date, '%Y-%m-%d').date())
+
+    rows = q.order_by(Sale.date.asc(), Sale.id.asc(), SaleItem.id.asc()).all()
+    sup_ids = list({s.supplier_id for _, s in rows if s.supplier_id})
+    sup_map = {c.id: c.name for c in Company.query.filter(Company.id.in_(sup_ids)).all()} if sup_ids else {}
+
+    export_data = []
+    for si, sale in rows:
+        supplier_name = sup_map.get(sale.supplier_id, '') if sale.supplier_id else ''
+        export_data.append({
+            'Date': sale.date.isoformat(),
+            'Customer': sale.customer.name if sale.customer else '',
+            'Supplier': supplier_name,
+            'ItemCode': si.item.code if si.item_id and si.item else '',
+            'LineDescription': (si.line_description or '') if not si.item_id else '',
+            'Quantity': float(si.quantity),
+            'UnitPrice': float(si.unit_price),
+            'Notes': sale.notes or '',
+        })
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df = pd.DataFrame(export_data)
+        sheet = 'Fast Sales' if fast_only else 'Sales Lines'
+        df.to_excel(writer, index=False, sheet_name=sheet)
+        worksheet = writer.sheets[sheet]
+        for idx, col in enumerate(df.columns):
+            max_length = max(df[col].astype(str).apply(len).max(), len(str(col))) if len(df) else len(str(col))
+            worksheet.column_dimensions[get_column_letter(idx + 1)].width = min(max_length + 2, 50)
+
+    output.seek(0)
+    name = f'fast_sales_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx' if fast_only else f'sales_lines_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+    return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=name)
+
 
 @bp.route('/import', methods=['POST'])
 @login_required
@@ -799,6 +1211,7 @@ def import_sales():
                 sale_item = SaleItem(
                     sale_id=sale.id,
                     item_id=item_data['item_id'],
+                    line_description=None,
                     quantity=item_data['quantity'],
                     unit_price=item_data['unit_price'],
                     total_price=item_data['total_price']
@@ -806,36 +1219,65 @@ def import_sales():
                 db.session.add(sale_item)
                 items_created += 1
 
-            # If cash sale, record in safe (only the paid_amount, not the total_amount)
-            # The balance (total_amount - paid_amount) remains as receivable and doesn't go into safe
-            if payment_type == 'Cash' and paid_amount > 0:
+            # Create Payment record for any initial payment (paid_amount > 0)
+            # For cash sales, this ensures the payment appears in the customer statement
+            # For credit sales with partial payment, this tracks the payment
+            payment = None
+            if paid_amount > 0 or payment_type == 'Cash':
+                payment_amount = paid_amount if paid_amount > 0 else total_amount
                 market = Market.query.get(market_id)
-                # Get last safe balance
+                payment_currency = customer.currency or (market.base_currency if market else 'USD')
+                exchange_rate = Decimal('1')
+                amount_base_currency = payment_amount
+
+                payment = Payment(
+                    market_id=market_id,
+                    company_id=customer.id,
+                    sale_id=sale.id,
+                    payment_type='In',
+                    amount=payment_amount,
+                    currency=payment_currency,
+                    exchange_rate=exchange_rate,
+                    amount_base_currency_stored=amount_base_currency,
+                    date=sale.date,
+                    notes=f'Initial payment for invoice {invoice_number}',
+                    loan=False
+                )
+                db.session.add(payment)
+                db.session.flush()
+
+            # Record in safe whenever there is an initial Payment row (cash, incl. full pay when file shows 0 paid, or credit partial)
+            if payment is not None:
+                market = Market.query.get(market_id)
                 last_transaction = SafeTransaction.query.filter_by(market_id=market_id).order_by(
                     SafeTransaction.date.desc(), SafeTransaction.id.desc()
                 ).first()
                 
                 balance_before = last_transaction.balance_after if last_transaction else Decimal('0')
-                balance_after = balance_before + paid_amount
+                exact_base_amount = payment.amount_base_currency
+                balance_after = balance_before + exact_base_amount
                 
-                # Calculate exact base currency amount (same as paid_amount for same currency)
-                exact_base_amount = paid_amount
-                
+                safe_exchange_rate = (
+                    exact_base_amount / payment.amount if payment.amount > 0 else payment.exchange_rate
+                )
                 safe_transaction = SafeTransaction(
                     market_id=market_id,
                     transaction_type='Inflow',
-                    amount=paid_amount,
-                    currency=customer.currency,
-                    exchange_rate=Decimal('1'),  # Same currency
-                    amount_base_currency_stored=exact_base_amount,  # Store exact value directly
+                    amount=payment.amount,
+                    currency=payment.currency,
+                    exchange_rate=safe_exchange_rate,
+                    amount_base_currency_stored=exact_base_amount,
                     date=sale.date,
-                    description=f'Sale {invoice_number} (Collected: {paid_amount}, Balance: {balance})',
+                    description=f'Sale {invoice_number} (Collected: {payment.amount}, Balance: {balance})',
                     sale_id=sale.id,
+                    payment_id=payment.id,
                     balance_after=balance_after
                 )
                 db.session.add(safe_transaction)
 
         db.session.commit()
+        from api.safe import recalc_safe_balances
+        recalc_safe_balances(market_id)
 
         return jsonify({
             'success': True,

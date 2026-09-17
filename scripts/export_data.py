@@ -49,10 +49,11 @@ def main():
     conn.row_factory = sqlite3.Row
     
     tables = [
-        'markets', 'companies', 'items', 'purchase_containers', 'purchase_items',
-        'sales', 'sale_items', 'payments', 'general_expenses', 'safe_transactions',
-        'safe_statement_real_balances', 'inventory_adjustments', 'inventory_batches',
-        'sale_item_allocations'
+        'markets', 'market_sticky_notes', 'market_partners', 'partner_drawings',
+        'purchasing_representatives', 'companies', 'items',
+        'purchase_containers', 'purchase_items', 'sales', 'sale_items', 'payments', 'general_expenses',
+        'safe_transactions', 'safe_statement_real_balances', 'inventory_adjustments', 'inventory_batches',
+        'sale_item_allocations', 'supplier_returns', 'supplier_return_lines', 'supplier_return_allocations'
     ]
     
     data = {}

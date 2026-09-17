@@ -71,6 +71,13 @@ function handleBodyClick(event) {
             profitLossDropdown.style.display = 'none';
         }
     }
+    const inventoryReportItemWrapper = document.getElementById('inventoryReportItemWrapper');
+    if (inventoryReportItemWrapper && !inventoryReportItemWrapper.contains(event.target)) {
+        const inventoryReportItemDropdown = document.getElementById('inventoryReportItemDropdown');
+        if (inventoryReportItemDropdown) {
+            inventoryReportItemDropdown.style.display = 'none';
+        }
+    }
 }
 
 // Attach click handler to body
@@ -134,7 +141,7 @@ function loadCurrentMarket() {
         })
         .catch(error => {
             // If no current market, try to get first market from list
-            fetch('/api/markets')
+            fetch('/api/markets?active_only=true')
                 .then(response => response.json())
                 .then(markets => {
                     if (markets && markets.length > 0) {
@@ -149,7 +156,7 @@ function loadCurrentMarket() {
 }
 
 function loadMarkets() {
-    fetch('/api/markets')
+    fetch('/api/markets?active_only=true')
         .then(response => response.json())
         .then(markets => {
             const marketList = document.getElementById('marketList');
@@ -386,9 +393,53 @@ function sortTable(table, columnIndex) {
     rows.forEach(row => tbody.appendChild(row));
 }
 
+/** Small dot: green = proof attached, gray = none (payment rows only). */
+function proofIndicatorHtml(hasProof) {
+    const yes = hasProof === true || hasProof === 'true';
+    const cls = yes ? 'proof-indicator-yes' : 'proof-indicator-no';
+    const title = yes ? 'Proof attached' : 'No proof';
+    return `<span class="proof-indicator ${cls}" title="${title}" aria-label="${title}"></span>`;
+}
+
 // Format Currency
 function formatCurrency(amount, currency = '') {
     return `${currency} ${parseFloat(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * Format balance with receivable/payable styling:
+ * - Receivable (they owe us, must be paid to us): RED with - sign
+ * - Payable (we owe them, must be paid to him): GREEN with + sign
+ * @param amount - balance amount (positive = depends on category)
+ * @param currency - currency code
+ * @param category - 'Customer' (positive=receivable), 'Supplier'|'Service Company' (positive=payable), or '' for default
+ */
+function formatBalanceWithSign(amount, currency = '', category = '') {
+    const n = parseFloat(amount);
+    const formatted = formatCurrency(Math.abs(n), currency).trim();
+    if (n === 0) {
+        return { html: formatted, color: 'inherit', class: 'balance-zero' };
+    }
+    // Customer: positive = they owe us (receivable) -> RED -
+    // Supplier/Service: positive = we owe them (payable) -> GREEN +
+    const isReceivable = (n > 0 && category === 'Customer') || (n < 0 && (category === 'Supplier' || category === 'Service Company'));
+    const isPayable = (n > 0 && (category === 'Supplier' || category === 'Service Company')) || (n < 0 && category === 'Customer');
+    if (isReceivable) {
+        return { html: `- ${formatted}`, color: '#c62828', class: 'balance-receivable' };
+    } else if (isPayable) {
+        return { html: `+ ${formatted}`, color: '#2e7d32', class: 'balance-payable' };
+    } else {
+        // Fallback when category unknown (e.g. "All" filter): positive=receivable (red -), negative=payable (green +)
+        if (n > 0) return { html: `- ${formatted}`, color: '#c62828', class: 'balance-receivable' };
+        return { html: `+ ${formatted}`, color: '#2e7d32', class: 'balance-payable' };
+    }
+}
+
+// Format Number (for quantities, weights, etc.)
+function formatNumber(num) {
+    const n = parseFloat(num);
+    if (isNaN(n)) return '0';
+    return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
 // Export to Excel (using SheetJS would require additional library)

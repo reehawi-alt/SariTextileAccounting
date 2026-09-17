@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block title %}Supplier Returns - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Supplier Returns</h1>
+    <div class="action-buttons">
+        <button type="button" class="btn btn-primary" onclick="openSupplierReturnModal()">+ New return</button>
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('srImportFile').click()">Import from Excel</button>
+        <a class="btn btn-secondary" href="{{ url_for('supplier_returns.download_import_template') }}">Download template</a>
+    </div>
+</div>
+<input type="file" id="srImportFile" accept=".xlsx,.xls" style="display:none">
+
+<p style="color: var(--text-secondary); margin: -8px 0 8px 0; max-width: 720px;">
+    Record goods you send back to a supplier. Stock is reduced (FIFO markets use newest layers first). The supplier statement shows a <strong>Return</strong> credit in their currency, reducing payables — this is not a safe/cash movement unless you record a refund separately in Payments.
+</p>
+<p style="color: var(--text-secondary); margin: 0 0 16px 0; max-width: 720px; font-size: 14px;">
+    <strong>Excel import:</strong> Rows with the same Supplier, Date, and Reference form one return. Columns: <code>Supplier</code>, <code>Date</code>, <code>ItemCode</code>, <code>Quantity</code>, plus <code>UnitPrice</code> and/or <code>TotalPrice</code>. Optional: <code>Reference</code>, <code>Notes</code>.
+</p>
+<div id="srImportMessage" style="margin-bottom: 12px;"></div>
+<div class="filters" style="margin-bottom: 16px;">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>Supplier</label>
+            <select id="returnFilterSupplier" class="form-control" onchange="loadSupplierReturns()">
+                <option value="">All suppliers</option>
+            </select>
+        </div>
+    </div>
+</div>
+
+<div class="table-container">
+    <table id="supplierReturnsTable">
+        <thead>
+            <tr>
+                <th class="sortable">Date</th>
+                <th>Reference</th>
+                <th>Supplier</th>
+                <th class="text-right">Total</th>
+                <th>Currency</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="supplierReturnsTableBody">
+            <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div id="supplierReturnViewModal" class="modal">
+    <div class="modal-content" style="max-width: 900px;">
+        <span class="close" onclick="closeSupplierReturnViewModal()">&times;</span>
+        <div id="supplierReturnInvoiceContent" style="background: white; padding: 30px; border-radius: 5px;">
+            <!-- Return document (invoice-style) loaded by JS -->
+        </div>
+        <div class="action-buttons" style="margin-top: 20px; text-align: center;">
+            <button type="button" class="btn btn-primary" onclick="printSupplierReturnDocument()">Print</button>
+            <button type="button" class="btn btn-secondary" onclick="closeSupplierReturnViewModal()">Close</button>
+        </div>
+    </div>
+</div>
+
+<div id="supplierReturnModal" class="modal">
+    <div class="modal-content" style="max-width: 640px;">
+        <div class="modal-header">
+            <h2 id="supplierReturnModalTitle">New supplier return</h2>
+            <span class="close" onclick="closeSupplierReturnModal()">&times;</span>
+        </div>
+        <form id="supplierReturnForm" onsubmit="submitSupplierReturn(event)">
+            <input type="hidden" id="srEditId" value="">
+            <input type="hidden" id="srExchangeRate" value="1">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Supplier *</label>
+                    <select id="srSupplier" required class="form-control" onchange="onSrSupplierChange()">
+                        <option value="">Select supplier</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Date *</label>
+                    <input type="date" id="srDate" required class="form-control">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Reference (optional)</label>
+                    <input type="text" id="srReference" class="form-control" placeholder="e.g. GRN-12345">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Notes</label>
+                <textarea id="srNotes" class="form-control" rows="2"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Lines *</label>
+                <div class="table-container" style="max-height: 240px; overflow: auto;">
+                    <table class="table" style="width:100%; font-size: 14px;">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th class="text-right">Qty</th>
+                                <th class="text-right">Unit price</th>
+                                <th class="text-right">Line total</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="srLinesBody"></tbody>
+                    </table>
+                </div>
+                <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="addSrLine()">+ Add line</button>
+            </div>
+            <div class="action-buttons" style="margin-top: 16px;">
+                <button type="submit" class="btn btn-primary">Save return</button>
+                <button type="button" class="btn btn-secondary" onclick="closeSupplierReturnModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/supplier_returns.js') }}"></script>
+{% endblock %}

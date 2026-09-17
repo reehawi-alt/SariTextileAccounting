@@ -77,6 +77,7 @@ function loadStatement() {
             html += '<th>Total OUT</th>';
             html += '<th>Balance</th>';
             html += '<th>Real Balance</th>';
+            html += '<th>Currency Rate</th>';
             html += '</tr></thead><tbody>';
             
             data.statement.forEach(row => {
@@ -86,7 +87,9 @@ function loadStatement() {
                 html += `<td style="color: red; font-weight: bold;">${formatNumber(row.total_out)}</td>`;
                 html += `<td style="font-weight: bold;">${formatNumber(row.balance)}</td>`;
                 const realBalanceValue = row.real_balance !== null && row.real_balance !== undefined ? row.real_balance : '';
+                const currencyRateValue = row.currency_rate !== null && row.currency_rate !== undefined ? row.currency_rate : '';
                 html += `<td><input type="number" step="0.01" class="real-balance-input" data-date="${row.date}" value="${realBalanceValue}" onchange="updateRealBalance('${row.date}', this.value)" style="width: 150px; padding: 5px; border: 1px solid #ddd; border-radius: 4px;"></td>`;
+                html += `<td><input type="number" step="0.0001" class="currency-rate-input" data-date="${row.date}" value="${currencyRateValue}" onchange="updateCurrencyRate('${row.date}', this.value)" style="width: 120px; padding: 5px; border: 1px solid #ddd; border-radius: 4px;"></td>`;
                 html += '</tr>';
             });
             
@@ -132,6 +135,32 @@ function updateRealBalance(date, value) {
     });
 }
 
+function updateCurrencyRate(date, value) {
+    const currencyRate = value === '' ? null : parseFloat(value);
+    fetch('/api/reports/safe-statement/real-balance', {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            date: date,
+            currency_rate: currencyRate
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error updating currency rate: ' + data.error);
+            loadStatement();
+        }
+    })
+    .catch(error => {
+        console.error('Error updating currency rate:', error);
+        alert('Error updating currency rate. Please try again.');
+        loadStatement();
+    });
+}
+
 function clearStatementFilters() {
     const today = new Date();
     const tenDaysAgo = new Date(today);
@@ -168,7 +197,8 @@ function exportStatementToExcel() {
 </script>
 
 <style>
-.real-balance-input:focus {
+.real-balance-input:focus,
+.currency-rate-input:focus {
     outline: 2px solid #1e3a5f;
     border-color: #1e3a5f;
 }

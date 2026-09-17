@@ -2,12 +2,17 @@
 
 let suppliers = [];
 let items = [];
+let representativesCache = [];
 
 document.addEventListener('DOMContentLoaded', function() {
+    loadSavedPurchasesColumnCheckboxState();
+    updatePurchasesColumnSelectorBadge();
+    applySavedPurchasesColumnVisibility();
     loadPurchases();
     loadSuppliers();
     loadServiceCompanies();
     loadItems();
+    loadRepresentativesForSelect();
     makeSortable(document.getElementById('purchasesTable'));
     
     // Check for container_id in URL to open container modal
@@ -52,6 +57,144 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+function loadRepresentativesForSelect(selectedId) {
+    return fetch('/api/representatives')
+        .then(response => response.json())
+        .then(data => {
+            representativesCache = data.representatives || [];
+            const select = document.getElementById('containerRepresentative');
+            if (!select) return;
+            const current = selectedId != null ? String(selectedId) : select.value;
+            select.innerHTML = '<option value="">None</option>';
+            representativesCache.forEach(rep => {
+                if (!rep.is_active && String(rep.id) !== String(current)) return;
+                const option = document.createElement('option');
+                option.value = rep.id;
+                option.textContent = rep.is_active ? rep.name : `${rep.name} (inactive)`;
+                select.appendChild(option);
+            });
+            if (current) select.value = current;
+        })
+        .catch(error => console.error('Error loading representatives:', error));
+}
+
+function openRepresentativesModal() {
+    cancelRepForm();
+    loadRepresentativesTable();
+    document.getElementById('representativesModal').style.display = 'block';
+}
+
+function closeRepresentativesModal() {
+    document.getElementById('representativesModal').style.display = 'none';
+    loadRepresentativesForSelect();
+}
+
+function loadRepresentativesTable() {
+    fetch('/api/representatives')
+        .then(response => response.json())
+        .then(data => {
+            representativesCache = data.representatives || [];
+            const tbody = document.getElementById('representativesTableBody');
+            if (!representativesCache.length) {
+                tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No representatives yet. Add one if this market uses collectors.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = representativesCache.map(r => `
+                <tr>
+                    <td>${escapeHtml(r.name)}</td>
+                    <td>${r.is_active ? '<span style="color:#2e7d32;font-weight:600;">Active</span>' : '<span style="color:#999;">Inactive</span>'}</td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-secondary" onclick="editRepresentative(${r.id})">Edit</button>
+                        <button type="button" class="btn btn-sm btn-danger" onclick="deleteRepresentative(${r.id})">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        })
+        .catch(() => {
+            document.getElementById('representativesTableBody').innerHTML =
+                '<tr><td colspan="3" class="empty-state">Error loading representatives</td></tr>';
+        });
+}
+
+function openRepForm() {
+    document.getElementById('repEditId').value = '';
+    document.getElementById('repName').value = '';
+    document.getElementById('repActive').value = 'true';
+    document.getElementById('repFormBox').style.display = 'block';
+}
+
+function editRepresentative(id) {
+    const r = representativesCache.find(x => x.id === id);
+    if (!r) return;
+    document.getElementById('repEditId').value = id;
+    document.getElementById('repName').value = r.name;
+    document.getElementById('repActive').value = r.is_active ? 'true' : 'false';
+    document.getElementById('repFormBox').style.display = 'block';
+}
+
+function cancelRepForm() {
+    const box = document.getElementById('repFormBox');
+    if (box) box.style.display = 'none';
+}
+
+function saveRepresentative() {
+    const id = document.getElementById('repEditId').value;
+    const name = (document.getElementById('repName').value || '').trim();
+    if (!name) {
+        alert('Name is required');
+        return;
+    }
+    const payload = {
+        name,
+        is_active: document.getElementById('repActive').value === 'true'
+    };
+    const url = id ? `/api/representatives/${id}` : '/api/representatives';
+    const method = id ? 'PUT' : 'POST';
+    fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok || data.error) {
+                alert(data.error || 'Error saving representative');
+                return;
+            }
+            cancelRepForm();
+            loadRepresentativesTable();
+            loadRepresentativesForSelect();
+            if (typeof showNotification === 'function') {
+                showNotification('Representative saved', 'success');
+            }
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function deleteRepresentative(id) {
+    if (!confirm('Delete this representative?')) return;
+    fetch(`/api/representatives/${id}`, { method: 'DELETE' })
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok || data.error) {
+                alert(data.error || 'Error deleting');
+                return;
+            }
+            loadRepresentativesTable();
+            loadRepresentativesForSelect();
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
 
 function loadPurchases() {
     fetch('/api/purchases/containers')
@@ -125,19 +268,25 @@ function renderPurchasesTable(containers) {
     updatePurchasesCount(containers.length);
     
     if (containers.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No purchases found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" class="empty-state">No purchases found</td></tr>';
         return;
     }
     
     tbody.innerHTML = containers.map(container => `
         <tr>
-            <td>${container.container_number}</td>
-            <td>${container.date}</td>
-            <td>${container.supplier_name}</td>
-            <td>${container.currency}</td>
-            <td>${container.exchange_rate.toFixed(4)}</td>
-            <td class="currency">${formatCurrency(container.total_amount, container.currency)}</td>
-            <td>
+            <td data-column="container_number">${container.container_number}</td>
+            <td data-column="date">${container.date}</td>
+            <td data-column="supplier">${container.supplier_name}</td>
+            <td data-column="representative">${container.representative_name || '—'}</td>
+            <td data-column="currency">${container.currency}</td>
+            <td data-column="exchange_rate">${container.exchange_rate.toFixed(4)}</td>
+            <td class="text-right" data-column="total_quantity">${formatNumber(container.total_quantity ?? 0)}</td>
+            <td class="text-right" data-column="total_weight">${formatNumber(container.total_weight ?? 0)}</td>
+            <td class="currency" data-column="total_amount">${formatCurrency(container.total_amount, container.currency)}</td>
+            <td class="currency text-right" data-column="expense1">${formatCurrency(container.expense1_amount ?? 0, container.currency)}</td>
+            <td class="currency text-right" data-column="expense2">${formatCurrency(container.expense2_amount ?? 0, container.currency)}</td>
+            <td class="currency text-right" data-column="supplier_cost" style="font-weight: 600;">${formatCurrency(container.supplier_cost ?? 0, container.currency)}</td>
+            <td data-column="actions">
                 <div class="action-btns">
                     <button class="btn-icon btn-edit" onclick="editContainer(${container.id})" title="Edit">✏️</button>
                     <button class="btn-icon btn-delete" onclick="deleteContainer(${container.id})" title="Delete">🗑️</button>
@@ -147,11 +296,12 @@ function renderPurchasesTable(containers) {
         </tr>
     `).join('');
     
-    // Restore sort state after table is rendered
+    // Restore sort state and column visibility after table is rendered
     setTimeout(() => {
         const table = document.getElementById('purchasesTable');
         if (table) {
             restoreTableSort(table);
+            applySavedPurchasesColumnVisibility();
         }
     }, 150);
 }
@@ -171,6 +321,8 @@ function openAddContainerModal() {
     document.getElementById('expense3Amount').value = 0;
     document.getElementById('expense3Currency').value = '';
     document.getElementById('expense3ExchangeRate').value = '';
+    document.getElementById('containerRepresentative').value = '';
+    loadRepresentativesForSelect();
     addContainerItemRow();
     const modal = document.getElementById('containerModal');
     modal.style.display = 'block';
@@ -404,6 +556,9 @@ function saveContainer() {
         container_number: document.getElementById('containerNumber').value,
         date: document.getElementById('containerDate').value,
         supplier_id: parseInt(document.getElementById('containerSupplier').value),
+        representative_id: document.getElementById('containerRepresentative').value
+            ? parseInt(document.getElementById('containerRepresentative').value)
+            : null,
         currency: document.getElementById('containerCurrency').value,
         exchange_rate: parseFloat(document.getElementById('containerExchangeRate').value),
         items: items,
@@ -465,6 +620,9 @@ function editContainer(containerId) {
             document.getElementById('containerNumber').value = container.container_number;
             document.getElementById('containerDate').value = container.date;
             document.getElementById('containerSupplier').value = container.supplier_id;
+            loadRepresentativesForSelect(container.representative_id).then(() => {
+                document.getElementById('containerRepresentative').value = container.representative_id || '';
+            });
             document.getElementById('containerCurrency').value = container.currency;
             document.getElementById('containerExchangeRate').value = container.exchange_rate;
             document.getElementById('containerNotes').value = container.notes || '';
@@ -515,14 +673,14 @@ function deleteContainer(containerId) {
     fetch(`/api/purchases/containers/${containerId}`, {
         method: 'DELETE'
     })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            alert('Error: ' + data.error);
-        } else {
-            loadPurchases();
-            showNotification('Container deleted successfully', 'success');
+    .then(async response => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.error) {
+            alert('Error: ' + (data.error || 'Failed to delete container'));
+            return;
         }
+        loadPurchases();
+        showNotification('Container deleted successfully', 'success');
     })
     .catch(error => {
         console.error('Error deleting container:', error);
@@ -675,4 +833,109 @@ function exportPurchases() {
     document.body.removeChild(link);
     
     showNotification('Export started. File will download shortly.', 'success');
+}
+
+// Purchases table column visibility
+function togglePurchasesColumnSelector() {
+    const dropdown = document.getElementById('purchasesColumnSelectorDropdown');
+    if (!dropdown) return;
+    const isVisible = dropdown.style.display === 'block';
+    dropdown.style.display = isVisible ? 'none' : 'block';
+    if (!isVisible) {
+        loadSavedPurchasesColumnCheckboxState();
+        updatePurchasesColumnSelectorBadge();
+        setTimeout(() => {
+            document.addEventListener('click', closePurchasesColumnSelectorOutside, true);
+        }, 0);
+    } else {
+        document.removeEventListener('click', closePurchasesColumnSelectorOutside, true);
+    }
+}
+
+function closePurchasesColumnSelectorOutside(event) {
+    const dropdown = document.getElementById('purchasesColumnSelectorDropdown');
+    const button = event.target.closest('button[onclick*="togglePurchasesColumnSelector"]');
+    if (dropdown && !dropdown.contains(event.target) && !button) {
+        dropdown.style.display = 'none';
+        document.removeEventListener('click', closePurchasesColumnSelectorOutside, true);
+    }
+}
+
+function selectAllPurchasesColumns() {
+    document.querySelectorAll('.purchases-column-checkbox').forEach((cb) => { cb.checked = true; });
+    updatePurchasesColumnSelectorBadge();
+}
+
+function deselectAllPurchasesColumns() {
+    document.querySelectorAll('.purchases-column-checkbox').forEach((cb) => { cb.checked = false; });
+    updatePurchasesColumnSelectorBadge();
+}
+
+function updatePurchasesColumnSelectorBadge() {
+    const checkboxes = document.querySelectorAll('.purchases-column-checkbox');
+    const checkedCount = Array.from(checkboxes).filter((cb) => cb.checked).length;
+    const badge = document.getElementById('purchasesColumnSelectorBadge');
+    if (!badge) return;
+    if (checkedCount < checkboxes.length) {
+        badge.textContent = checkboxes.length - checkedCount;
+        badge.style.display = 'block';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+function savePurchasesColumnVisibility() {
+    const visibility = {};
+    document.querySelectorAll('.purchases-column-checkbox').forEach((cb) => {
+        visibility[cb.getAttribute('data-column')] = cb.checked;
+    });
+    localStorage.setItem('purchasesColumnVisibility', JSON.stringify(visibility));
+}
+
+function loadSavedPurchasesColumnCheckboxState() {
+    const saved = localStorage.getItem('purchasesColumnVisibility');
+    if (!saved) {
+        document.querySelectorAll('.purchases-column-checkbox').forEach((cb) => { cb.checked = true; });
+        return;
+    }
+    try {
+        const visibility = JSON.parse(saved);
+        document.querySelectorAll('.purchases-column-checkbox').forEach((cb) => {
+            const column = cb.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column)) {
+                cb.checked = visibility[column] !== false;
+            }
+        });
+    } catch (e) {
+        console.error('Error loading purchases column visibility:', e);
+    }
+}
+
+function applySavedPurchasesColumnVisibility() {
+    const saved = localStorage.getItem('purchasesColumnVisibility');
+    if (!saved) return;
+    try {
+        const visibility = JSON.parse(saved);
+        const table = document.getElementById('purchasesTable');
+        if (!table) return;
+        table.querySelectorAll('thead th[data-column], tbody td[data-column]').forEach((cell) => {
+            const column = cell.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column) && visibility[column] === false) {
+                cell.style.display = 'none';
+            } else {
+                cell.style.display = '';
+            }
+        });
+    } catch (e) {
+        console.error('Error applying purchases column visibility:', e);
+    }
+}
+
+function applyPurchasesColumnVisibility() {
+    savePurchasesColumnVisibility();
+    const dropdown = document.getElementById('purchasesColumnSelectorDropdown');
+    if (dropdown) dropdown.style.display = 'none';
+    document.removeEventListener('click', closePurchasesColumnSelectorOutside, true);
+    applySavedPurchasesColumnVisibility();
+    updatePurchasesColumnSelectorBadge();
 }

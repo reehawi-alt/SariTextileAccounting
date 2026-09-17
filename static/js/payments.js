@@ -2,8 +2,13 @@
 
 let companies = [];
 let sales = [];
+let paymentRowProofUploadId = null;
 
 document.addEventListener('DOMContentLoaded', function() {
+    loadSavedPaymentsColumnCheckboxState();
+    updatePaymentsColumnSelectorBadge();
+    applySavedPaymentsColumnVisibility();
+
     // Load market info to get base currency
     fetch('/api/current-market')
         .then(response => response.json())
@@ -70,6 +75,29 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
+    // Row proof upload (Actions column)
+    const rowProofInput = document.getElementById('paymentRowProofFile');
+    if (rowProofInput) {
+        rowProofInput.addEventListener('change', function() {
+            if (!paymentRowProofUploadId || !this.files || !this.files.length) return;
+            const paymentId = paymentRowProofUploadId;
+            const file = this.files[0];
+            paymentRowProofUploadId = null;
+            uploadPaymentProof(paymentId, file)
+                .then(() => {
+                    loadPayments();
+                    showNotification('Proof uploaded successfully', 'success');
+                })
+                .catch(error => {
+                    console.error('Error uploading proof:', error);
+                    alert('Error uploading proof: ' + (error.message || 'Unknown error'));
+                })
+                .finally(() => {
+                    rowProofInput.value = '';
+                });
+        });
+    }
+
     // Import form
     const importForm = document.getElementById('importPaymentsForm');
     if (importForm) {
@@ -135,26 +163,39 @@ function loadCompanies() {
 
 let baseCurrency = 'CFA'; // Default, will be updated when market is loaded
 
+function formatPaymentNotes(notes) {
+    const text = (notes || '').trim();
+    if (!text) return '-';
+    const escaped = escapeHtml(text);
+    if (text.length > 60) {
+        return `<span title="${escaped}">${escapeHtml(text.slice(0, 60))}…</span>`;
+    }
+    return escaped;
+}
+
 function renderPaymentsTable(payments) {
     const tbody = document.getElementById('paymentsTableBody');
     
     if (payments.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No payments found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No payments found</td></tr>';
         return;
     }
     
     tbody.innerHTML = payments.map(payment => `
         <tr>
-            <td>${payment.date}</td>
-            <td>${payment.company_name}</td>
-            <td><span class="badge ${payment.payment_type === 'In' ? 'badge-paid' : 'badge-unpaid'}">${payment.payment_type}</span></td>
-            <td class="currency">${formatCurrency(payment.amount, payment.currency)}</td>
-            <td>${payment.currency}</td>
-            <td class="currency">${formatCurrency(payment.amount_base_currency || 0, baseCurrency)}</td>
-            <td class="text-right">${(payment.exchange_rate || 0).toFixed(4)}</td>
-            <td>${payment.invoice_number || '-'}</td>
-            <td>
+            <td data-column="date">${payment.date}</td>
+            <td data-column="company">${escapeHtml(payment.company_name)}</td>
+            <td data-column="type"><span class="payment-type-cell"><span class="badge ${payment.payment_type === 'In' ? 'badge-paid' : 'badge-unpaid'}">${payment.payment_type}</span>${proofIndicatorHtml(payment.has_proof)}</span></td>
+            <td data-column="amount" class="currency">${formatCurrency(payment.amount, payment.currency)}</td>
+            <td data-column="currency">${escapeHtml(payment.currency)}</td>
+            <td data-column="amount_base" class="currency">${formatCurrency(payment.amount_base_currency || 0, baseCurrency)}</td>
+            <td data-column="exchange_rate" class="text-right">${(payment.exchange_rate || 0).toFixed(4)}</td>
+            <td data-column="invoice">${escapeHtml(payment.invoice_number || '-')}</td>
+            <td data-column="notes" class="payment-notes-cell">${formatPaymentNotes(payment.notes)}</td>
+            <td data-column="actions">
                 <div class="action-btns">
+                    <button type="button" class="btn-icon btn-view btn-view-label" onclick="viewPaymentProof(${payment.id}, ${payment.has_proof ? 'true' : 'false'})" title="View proof of payment">View</button>
+                    <button type="button" class="btn-icon btn-upload btn-view-label" onclick="openPaymentProofUpload(${payment.id})" title="Upload proof of payment">Upload</button>
                     <button class="btn-icon btn-edit" onclick="editPayment(${payment.id})" title="Edit">✏️</button>
                     <button class="btn-icon btn-delete" onclick="deletePayment(${payment.id})" title="Delete">🗑️</button>
                 </div>
@@ -167,8 +208,100 @@ function renderPaymentsTable(payments) {
         const table = document.getElementById('paymentsTable');
         if (table) {
             restoreTableSort(table);
+            applySavedPaymentsColumnVisibility();
         }
     }, 150);
+}
+
+function escapeHtml(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function viewPaymentProof(paymentId, hasProof) {
+    if (hasProof === false || hasProof === 'false') {
+        alert('No proof file attached to this payment.');
+        return;
+    }
+    window.open(`/api/payments/${paymentId}/proof`, '_blank', 'noopener');
+}
+
+function openPaymentProofUpload(paymentId) {
+    paymentRowProofUploadId = paymentId;
+    const input = document.getElementById('paymentRowProofFile');
+    if (!input) return;
+    input.value = '';
+    input.click();
+}
+
+function resetPaymentProofUI() {
+    const fileInput = document.getElementById('paymentProofFile');
+    const currentWrap = document.getElementById('paymentProofCurrent');
+    const viewLink = document.getElementById('paymentProofViewLink');
+    if (fileInput) fileInput.value = '';
+    if (currentWrap) currentWrap.style.display = 'none';
+    if (viewLink) {
+        viewLink.textContent = '';
+        viewLink.href = '#';
+    }
+}
+
+function showPaymentProofUI(payment) {
+    const currentWrap = document.getElementById('paymentProofCurrent');
+    const viewLink = document.getElementById('paymentProofViewLink');
+    if (!payment || !payment.has_proof) {
+        resetPaymentProofUI();
+        return;
+    }
+    if (currentWrap) currentWrap.style.display = 'block';
+    if (viewLink) {
+        viewLink.href = `/api/payments/${payment.id}/proof`;
+        viewLink.textContent = payment.proof_original_filename || 'View proof';
+    }
+}
+
+function uploadPaymentProof(paymentId, file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return fetch(`/api/payments/${paymentId}/proof`, {
+        method: 'POST',
+        body: formData
+    }).then(response => response.json().then(data => {
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to upload proof file');
+        }
+        return data;
+    }));
+}
+
+function removePaymentProof() {
+    const paymentId = document.getElementById('paymentId').value;
+    if (!paymentId) {
+        document.getElementById('paymentProofFile').value = '';
+        resetPaymentProofUI();
+        return;
+    }
+    if (!confirm('Remove the proof file from this payment?')) {
+        return;
+    }
+    fetch(`/api/payments/${paymentId}/proof`, { method: 'DELETE' })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            resetPaymentProofUI();
+            showNotification('Proof file removed', 'success');
+        })
+        .catch(error => {
+            console.error('Error removing proof:', error);
+            alert('Error removing proof file');
+        });
 }
 
 function openAddPaymentModal() {
@@ -180,6 +313,7 @@ function openAddPaymentModal() {
     document.getElementById('paymentAmountBase').value = '';
     document.getElementById('paymentExchangeRate').value = '';
     document.getElementById('paymentLoan').checked = false;
+    resetPaymentProofUI();
     document.getElementById('paymentModal').style.display = 'block';
 }
 
@@ -204,6 +338,8 @@ function editPayment(paymentId) {
             document.getElementById('paymentInvoice').value = payment.invoice_number || '';
             document.getElementById('paymentNotes').value = payment.notes || '';
             document.getElementById('paymentLoan').checked = payment.loan || false;
+            document.getElementById('paymentProofFile').value = '';
+            showPaymentProofUI(payment);
             document.getElementById('paymentModal').style.display = 'block';
         })
         .catch(error => {
@@ -214,6 +350,7 @@ function editPayment(paymentId) {
 
 function closePaymentModal() {
     document.getElementById('paymentModal').style.display = 'none';
+    resetPaymentProofUI();
 }
 
 function savePayment() {
@@ -256,6 +393,10 @@ function savePayment() {
     
     const url = paymentId ? `/api/payments/${paymentId}` : '/api/payments';
     const method = paymentId ? 'PUT' : 'POST';
+    const proofFileInput = document.getElementById('paymentProofFile');
+    const proofFile = proofFileInput && proofFileInput.files && proofFileInput.files.length
+        ? proofFileInput.files[0]
+        : null;
     
     fetch(url, {
         method: method,
@@ -268,15 +409,22 @@ function savePayment() {
     .then(data => {
         if (data.error) {
             alert('Error: ' + data.error);
-        } else {
-            closePaymentModal();
-            loadPayments();
-            showNotification('Payment saved successfully', 'success');
+            return null;
         }
+        if (proofFile) {
+            return uploadPaymentProof(data.id, proofFile).then(() => data);
+        }
+        return data;
+    })
+    .then(data => {
+        if (!data) return;
+        closePaymentModal();
+        loadPayments();
+        showNotification('Payment saved successfully', 'success');
     })
     .catch(error => {
         console.error('Error saving payment:', error);
-        alert('Error saving payment');
+        alert('Error saving payment: ' + (error.message || 'Unknown error'));
     });
 }
 
@@ -389,4 +537,109 @@ function importPayments() {
         submitBtn.textContent = originalText;
         document.getElementById('importPaymentsForm').reset();
     });
+}
+
+// Payments table column visibility
+function togglePaymentsColumnSelector() {
+    const dropdown = document.getElementById('paymentsColumnSelectorDropdown');
+    if (!dropdown) return;
+    const isVisible = dropdown.style.display === 'block';
+    dropdown.style.display = isVisible ? 'none' : 'block';
+    if (!isVisible) {
+        loadSavedPaymentsColumnCheckboxState();
+        updatePaymentsColumnSelectorBadge();
+        setTimeout(() => {
+            document.addEventListener('click', closePaymentsColumnSelectorOutside, true);
+        }, 0);
+    } else {
+        document.removeEventListener('click', closePaymentsColumnSelectorOutside, true);
+    }
+}
+
+function closePaymentsColumnSelectorOutside(event) {
+    const dropdown = document.getElementById('paymentsColumnSelectorDropdown');
+    const button = event.target.closest('button[onclick*="togglePaymentsColumnSelector"]');
+    if (dropdown && !dropdown.contains(event.target) && !button) {
+        dropdown.style.display = 'none';
+        document.removeEventListener('click', closePaymentsColumnSelectorOutside, true);
+    }
+}
+
+function selectAllPaymentsColumns() {
+    document.querySelectorAll('.payments-column-checkbox').forEach((cb) => { cb.checked = true; });
+    updatePaymentsColumnSelectorBadge();
+}
+
+function deselectAllPaymentsColumns() {
+    document.querySelectorAll('.payments-column-checkbox').forEach((cb) => { cb.checked = false; });
+    updatePaymentsColumnSelectorBadge();
+}
+
+function updatePaymentsColumnSelectorBadge() {
+    const checkboxes = document.querySelectorAll('.payments-column-checkbox');
+    const checkedCount = Array.from(checkboxes).filter((cb) => cb.checked).length;
+    const badge = document.getElementById('paymentsColumnSelectorBadge');
+    if (!badge) return;
+    if (checkedCount < checkboxes.length) {
+        badge.textContent = checkboxes.length - checkedCount;
+        badge.style.display = 'block';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+function savePaymentsColumnVisibility() {
+    const visibility = {};
+    document.querySelectorAll('.payments-column-checkbox').forEach((cb) => {
+        visibility[cb.getAttribute('data-column')] = cb.checked;
+    });
+    localStorage.setItem('paymentsColumnVisibility', JSON.stringify(visibility));
+}
+
+function loadSavedPaymentsColumnCheckboxState() {
+    const saved = localStorage.getItem('paymentsColumnVisibility');
+    if (!saved) {
+        document.querySelectorAll('.payments-column-checkbox').forEach((cb) => { cb.checked = true; });
+        return;
+    }
+    try {
+        const visibility = JSON.parse(saved);
+        document.querySelectorAll('.payments-column-checkbox').forEach((cb) => {
+            const column = cb.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column)) {
+                cb.checked = visibility[column] !== false;
+            }
+        });
+    } catch (e) {
+        console.error('Error loading payments column visibility:', e);
+    }
+}
+
+function applySavedPaymentsColumnVisibility() {
+    const saved = localStorage.getItem('paymentsColumnVisibility');
+    if (!saved) return;
+    try {
+        const visibility = JSON.parse(saved);
+        const table = document.getElementById('paymentsTable');
+        if (!table) return;
+        table.querySelectorAll('thead th[data-column], tbody td[data-column]').forEach((cell) => {
+            const column = cell.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column) && visibility[column] === false) {
+                cell.style.display = 'none';
+            } else {
+                cell.style.display = '';
+            }
+        });
+    } catch (e) {
+        console.error('Error applying payments column visibility:', e);
+    }
+}
+
+function applyPaymentsColumnVisibility() {
+    savePaymentsColumnVisibility();
+    const dropdown = document.getElementById('paymentsColumnSelectorDropdown');
+    if (dropdown) dropdown.style.display = 'none';
+    document.removeEventListener('click', closePaymentsColumnSelectorOutside, true);
+    applySavedPaymentsColumnVisibility();
+    updatePaymentsColumnSelectorBadge();
 }

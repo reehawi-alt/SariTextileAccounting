@@ -5,6 +5,13 @@ let currentItemId = null;
 let currentItemCode = null;
 let currentItemName = null;
 
+/** When set, Movement Details shows only Sale rows matching this unit price + currency (inventory report). */
+let inventorySalesPriceFilter = null;
+/** { movements, breakdown, itemId } for re-rendering after filter click */
+let inventoryReportCache = null;
+
+const INV_SALES_PRICE_EPS = 1e-6;
+
 document.addEventListener('DOMContentLoaded', function() {
     // Set default dates (last 10 days for general reports, 01/01/2020 for inventory movement)
     const today = new Date();
@@ -46,6 +53,49 @@ document.addEventListener('DOMContentLoaded', function() {
             }, 500);
         }
     }
+
+    // Deep links from Partners page (and bookmarks)
+    if (reportParam === 'partner-profit') {
+        if (typeof showReportCategory === 'function') showReportCategory('financial');
+        showPartnerProfitReport();
+    } else if (reportParam === 'profit-loss') {
+        if (typeof showReportCategory === 'function') showReportCategory('financial');
+        showProfitLossReport();
+    } else if (reportParam === 'safe') {
+        if (typeof showReportCategory === 'function') showReportCategory('safe');
+        showSafeReport();
+    } else if (reportParam === 'safe-out') {
+        if (typeof showReportCategory === 'function') showReportCategory('safe');
+        showSafeOutReport();
+    }
+
+    const reportContentEl = document.getElementById('reportContent');
+    if (reportContentEl) {
+        reportContentEl.addEventListener('click', function inventorySalesPriceFilterHandler(e) {
+            if (currentReportType !== 'inventory') return;
+            const clearBtn = e.target.closest('.inventory-clear-sales-filter-btn');
+            if (clearBtn) {
+                e.preventDefault();
+                inventorySalesPriceFilter = null;
+                refreshInventoryReportDom();
+                return;
+            }
+            const row = e.target.closest('.sales-price-breakdown-row');
+            if (!row) return;
+            const unitRaw = row.getAttribute('data-sp-unit-price');
+            const cur = row.getAttribute('data-sp-currency') || '';
+            const unit = parseFloat(unitRaw, 10);
+            if (Number.isNaN(unit)) return;
+            if (inventorySalesPriceFilter &&
+                Math.abs(inventorySalesPriceFilter.unit_price - unit) < INV_SALES_PRICE_EPS &&
+                inventorySalesPriceFilter.currency === cur) {
+                inventorySalesPriceFilter = null;
+            } else {
+                inventorySalesPriceFilter = { unit_price: unit, currency: cur };
+            }
+            refreshInventoryReportDom();
+        });
+    }
 });
 
 function showProfitLossReport() {
@@ -60,7 +110,7 @@ function showProfitLossReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'block';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -68,8 +118,33 @@ function showProfitLossReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     loadItemsForProfitLoss();
+    loadReport();
+}
+
+function showPartnerProfitReport() {
+    currentReportType = 'partner-profit';
+    const pdfBtn = document.getElementById('exportPDFBtn');
+    if (pdfBtn) pdfBtn.style.display = 'none';
+    document.getElementById('reportTitle').textContent = 'Partner Profit Allocation';
+    document.getElementById('reportFilters').style.display = 'block';
+    document.getElementById('containerReportFilters').style.display = 'none';
+    document.getElementById('safeReportTypeFilter').style.display = 'none';
+    document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
+    document.getElementById('inventoryItemFilter').style.display = 'none';
+    document.getElementById('profitLossItemFilter').style.display = 'none';
+    hideInventoryStockRelatedFilters();
+    document.getElementById('inventorySnapshotFilters').style.display = 'none';
+    document.getElementById('itemStatementFilters').style.display = 'none';
+    document.getElementById('stockValueDetailsFilters').style.display = 'none';
+    document.getElementById('virtualPurchaseProfitFilters').style.display = 'none';
+    document.getElementById('averageSalePriceFilters').style.display = 'none';
+    document.getElementById('averageLastNSalesFilters').style.display = 'none';
+    document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
+    document.getElementById('reportArea').style.display = 'block';
     loadReport();
 }
 
@@ -86,7 +161,7 @@ function showInventoryReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'block';
     document.getElementById('inventoryItemFilter').style.display = 'block';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -94,6 +169,7 @@ function showInventoryReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     
     // Set default start date to 01/01/2020
@@ -102,15 +178,8 @@ function showInventoryReport() {
         startDateInput.value = window.inventoryDefaultStartDate;
     }
     
-    // Load items for filter
+    // Load items for filter (also sets item when currentItemId from URL)
     loadItemsForInventoryReport();
-    
-    // Set item filter if coming from URL
-    if (currentItemId) {
-        setTimeout(() => {
-            document.getElementById('inventoryReportItem').value = currentItemId;
-        }, 500);
-    }
     
     // Display filter info if item selected
     const infoBar = document.getElementById('reportFilterInfo');
@@ -138,7 +207,7 @@ function showReceivablesReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -146,6 +215,7 @@ function showReceivablesReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     loadReport();
 }
@@ -162,7 +232,7 @@ function showPayablesReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -170,6 +240,7 @@ function showPayablesReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     loadReport();
 }
@@ -186,7 +257,7 @@ function showSalesReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -207,7 +278,7 @@ function showVirtualPurchaseProfitReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -215,6 +286,7 @@ function showVirtualPurchaseProfitReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     
     // Show empty state until file is uploaded
@@ -222,8 +294,25 @@ function showVirtualPurchaseProfitReport() {
     content.innerHTML = '<p style="color: var(--text-secondary); padding: 20px; text-align: center;">Please upload an Excel file with columns: ItemCode, Quantity, Price, Currency, ExchangeRate</p>';
 }
 
+function setReportDatesByDayOffset(startOffsetDays, endOffsetDays) {
+    const fmt = (d) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+    };
+    const base = new Date();
+    const start = new Date(base);
+    start.setDate(base.getDate() - startOffsetDays);
+    const end = new Date(base);
+    end.setDate(base.getDate() - endOffsetDays);
+    document.getElementById('reportStartDate').value = fmt(start);
+    document.getElementById('reportEndDate').value = fmt(end);
+}
+
 function showDailySalesReport() {
     currentReportType = 'daily-sales';
+    setReportDatesByDayOffset(1, 0); // yesterday → today
     const pdfBtn = document.getElementById('exportPDFBtn');
     if (pdfBtn) pdfBtn.style.display = 'none';
     document.getElementById('reportTitle').textContent = 'Daily Sales Invoice Report';
@@ -233,7 +322,7 @@ function showDailySalesReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -241,8 +330,65 @@ function showDailySalesReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
+    const repFilter = document.getElementById('reportRepresentativeFilter');
+    if (repFilter) repFilter.style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     loadDailySalesReport();
+}
+
+function showDailyPurchasesReport() {
+    currentReportType = 'daily-purchases';
+    const pdfBtn = document.getElementById('exportPDFBtn');
+    if (pdfBtn) pdfBtn.style.display = 'none';
+    document.getElementById('reportTitle').textContent = 'Daily Purchase Invoice Report';
+    document.getElementById('reportFilters').style.display = 'block';
+    document.getElementById('containerReportFilters').style.display = 'none';
+    document.getElementById('safeReportTypeFilter').style.display = 'none';
+    document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
+    document.getElementById('inventoryItemFilter').style.display = 'none';
+    document.getElementById('profitLossItemFilter').style.display = 'none';
+    hideInventoryStockRelatedFilters();
+    document.getElementById('inventorySnapshotFilters').style.display = 'none';
+    document.getElementById('itemStatementFilters').style.display = 'none';
+    document.getElementById('stockValueDetailsFilters').style.display = 'none';
+    document.getElementById('virtualPurchaseProfitFilters').style.display = 'none';
+    document.getElementById('averageSalePriceFilters').style.display = 'none';
+    document.getElementById('averageLastNSalesFilters').style.display = 'none';
+    document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
+    const repFilter = document.getElementById('reportRepresentativeFilter');
+    if (repFilter) repFilter.style.display = 'block';
+    loadReportRepresentatives();
+    document.getElementById('reportArea').style.display = 'block';
+    loadDailyPurchasesReport();
+}
+
+function showRepresentativeCollectionsReport() {
+    currentReportType = 'representative-collections';
+    const pdfBtn = document.getElementById('exportPDFBtn');
+    if (pdfBtn) pdfBtn.style.display = 'none';
+    document.getElementById('reportTitle').textContent = 'Representative Collections Report (Detailed)';
+    document.getElementById('reportFilters').style.display = 'block';
+    document.getElementById('containerReportFilters').style.display = 'none';
+    document.getElementById('safeReportTypeFilter').style.display = 'none';
+    document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
+    document.getElementById('inventoryItemFilter').style.display = 'none';
+    document.getElementById('profitLossItemFilter').style.display = 'none';
+    hideInventoryStockRelatedFilters();
+    document.getElementById('inventorySnapshotFilters').style.display = 'none';
+    document.getElementById('itemStatementFilters').style.display = 'none';
+    document.getElementById('stockValueDetailsFilters').style.display = 'none';
+    document.getElementById('virtualPurchaseProfitFilters').style.display = 'none';
+    document.getElementById('averageSalePriceFilters').style.display = 'none';
+    document.getElementById('averageLastNSalesFilters').style.display = 'none';
+    document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
+    const repFilter = document.getElementById('reportRepresentativeFilter');
+    if (repFilter) repFilter.style.display = 'block';
+    loadReportRepresentatives();
+    document.getElementById('reportArea').style.display = 'block';
+    loadRepresentativeCollectionsReport();
 }
 
 function showAverageSalePriceReport() {
@@ -257,7 +403,7 @@ function showAverageSalePriceReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -265,6 +411,7 @@ function showAverageSalePriceReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'block';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     
     // Load filters
@@ -287,7 +434,7 @@ function showAverageLastNSalesReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -295,6 +442,7 @@ function showAverageLastNSalesReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'block';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     loadSuppliersForAverageLastNSales();
     loadItemsForAverageLastNSales();
@@ -310,7 +458,10 @@ function showCollectedMoneyReport() {
     document.getElementById('reportFilters').style.display = 'block';
     document.getElementById('containerReportFilters').style.display = 'none';
     document.getElementById('safeReportTypeFilter').style.display = 'none';
+    document.getElementById('collectedMoneyCustomerFilter').style.display = 'block';
     document.getElementById('collectedMoneyColumnSelector').style.display = 'block';
+    setSafeOutColumnSelectorVisible(false);
+    setProfitLossColumnSelectorVisible(false);
     document.getElementById('reportArea').style.display = 'block';
     loadCollectedMoneyReport();
 }
@@ -324,7 +475,10 @@ function showSafeOutReport() {
     document.getElementById('reportFilters').style.display = 'block';
     document.getElementById('containerReportFilters').style.display = 'none';
     document.getElementById('safeReportTypeFilter').style.display = 'none';
+    document.getElementById('collectedMoneyCustomerFilter').style.display = 'none';
     document.getElementById('collectedMoneyColumnSelector').style.display = 'none';
+    setProfitLossColumnSelectorVisible(false);
+    setSafeOutColumnSelectorVisible(true);
     document.getElementById('reportArea').style.display = 'block';
     loadSafeOutReport();
 }
@@ -338,10 +492,11 @@ function showSafeReport() {
     document.getElementById('reportFilters').style.display = 'block';
     document.getElementById('containerReportFilters').style.display = 'none';
     document.getElementById('safeReportTypeFilter').style.display = 'block';
+    document.getElementById('collectedMoneyCustomerFilter').style.display = 'none';
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -349,6 +504,7 @@ function showSafeReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     loadReport();
 }
@@ -362,7 +518,7 @@ function showContainerReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -370,6 +526,7 @@ function showContainerReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     // Show PDF export button for container report
     const pdfBtn = document.getElementById('exportPDFBtn');
@@ -390,7 +547,7 @@ function showLastPurchasePriceReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -398,10 +555,38 @@ function showLastPurchasePriceReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'block';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     loadSuppliersForLastPurchasePrice();
     loadItemsForLastPurchasePrice();
     loadLastPurchasePriceReport();
+}
+
+function showLastPurchaseCogReport() {
+    currentReportType = 'last-purchase-cog';
+    const pdfBtn = document.getElementById('exportPDFBtn');
+    if (pdfBtn) pdfBtn.style.display = 'none';
+    document.getElementById('reportTitle').textContent = 'Last Purchase COG';
+    document.getElementById('reportFilters').style.display = 'none';
+    document.getElementById('containerReportFilters').style.display = 'none';
+    document.getElementById('safeReportTypeFilter').style.display = 'none';
+    document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
+    document.getElementById('inventoryItemFilter').style.display = 'none';
+    document.getElementById('profitLossItemFilter').style.display = 'none';
+    hideInventoryStockRelatedFilters();
+    document.getElementById('inventorySnapshotFilters').style.display = 'none';
+    document.getElementById('itemStatementFilters').style.display = 'none';
+    document.getElementById('stockValueDetailsFilters').style.display = 'none';
+    document.getElementById('virtualPurchaseProfitFilters').style.display = 'none';
+    document.getElementById('averageSalePriceFilters').style.display = 'none';
+    document.getElementById('averageLastNSalesFilters').style.display = 'none';
+    document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'block';
+    document.getElementById('reportArea').style.display = 'block';
+    loadSuppliersForLastPurchaseCog();
+    loadItemsForLastPurchaseCog();
+    loadLastPurchaseCogReport();
 }
 
 function showStockValueDetailsReport() {
@@ -416,7 +601,7 @@ function showStockValueDetailsReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'block';
@@ -424,6 +609,7 @@ function showStockValueDetailsReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     
     // Load items for filter
@@ -442,21 +628,36 @@ function closeReport() {
     currentReportType = null;
 }
 
+function hideInventoryStockRelatedFilters() {
+    const stock = document.getElementById('inventoryStockFilters');
+    if (stock) stock.style.display = 'none';
+    const atCost = document.getElementById('inventoryStockAtCostFilters');
+    if (atCost) atCost.style.display = 'none';
+    const repFilter = document.getElementById('reportRepresentativeFilter');
+    if (repFilter) repFilter.style.display = 'none';
+}
+
 function clearReportFilters() {
     document.getElementById('reportStartDate').value = '';
     document.getElementById('reportEndDate').value = '';
+    const reportRep = document.getElementById('reportRepresentativeId');
+    if (reportRep) reportRep.value = '';
     const transactionTypeSelect = document.getElementById('reportTransactionType');
     if (transactionTypeSelect) {
         transactionTypeSelect.value = 'All';
+    }
+    const collectedMoneyCustomerType = document.getElementById('collectedMoneyCustomerType');
+    if (collectedMoneyCustomerType) {
+        collectedMoneyCustomerType.value = 'both';
     }
     const movementTypeSelect = document.getElementById('inventoryMovementType');
     if (movementTypeSelect) {
         movementTypeSelect.value = 'both';
     }
-    const itemSelect = document.getElementById('inventoryReportItem');
-    if (itemSelect) {
-        itemSelect.value = '';
-    }
+    const inventoryReportItemInput = document.getElementById('inventoryReportItem');
+    const inventoryReportItemSearch = document.getElementById('inventoryReportItemSearch');
+    if (inventoryReportItemInput) inventoryReportItemInput.value = '';
+    if (inventoryReportItemSearch) inventoryReportItemSearch.value = '';
     const profitLossItemInput = document.getElementById('profitLossItem');
     const profitLossItemSearch = document.getElementById('profitLossItemSearch');
     if (profitLossItemInput) profitLossItemInput.value = '';
@@ -469,6 +670,8 @@ function clearReportFilters() {
 }
 
 function loadReport() {
+    setProfitLossColumnSelectorVisible(currentReportType === 'profit-loss');
+    setSafeOutColumnSelectorVisible(currentReportType === 'safe-out');
     const content = document.getElementById('reportContent');
     content.innerHTML = '<div class="spinner"></div>';
     
@@ -481,6 +684,9 @@ function loadReport() {
             break;
         case 'inventory-stock':
             loadInventoryStockReport();
+            break;
+        case 'inventory-stock-at-cost':
+            loadInventoryStockAtCostReport();
             break;
         case 'inventory-snapshot':
             loadInventorySnapshotReport();
@@ -518,14 +724,26 @@ function loadReport() {
         case 'last-purchase-price':
             loadLastPurchasePriceReport();
             break;
+        case 'last-purchase-cog':
+            loadLastPurchaseCogReport();
+            break;
         case 'daily-sales':
             loadDailySalesReport();
+            break;
+        case 'daily-purchases':
+            loadDailyPurchasesReport();
+            break;
+        case 'representative-collections':
+            loadRepresentativeCollectionsReport();
             break;
         case 'safe-out':
             loadSafeOutReport();
             break;
         case 'collected-money':
             loadCollectedMoneyReport();
+            break;
+        case 'partner-profit':
+            loadPartnerProfitReport();
             break;
     }
 }
@@ -545,6 +763,13 @@ function loadCurrentMarketForReports() {
         });
 }
 
+function dailySalesUsdRateTitle(day) {
+    if (day.usd_rate_from_safe_statement) {
+        return `Safe Statement rate: ${day.usd_rate} (base per USD)`;
+    }
+    return `No Safe Statement rate for this date; using default ${day.usd_rate}`;
+}
+
 function loadDailySalesReport() {
     const startDate = document.getElementById('reportStartDate').value;
     const endDate = document.getElementById('reportEndDate').value;
@@ -560,13 +785,63 @@ function loadDailySalesReport() {
                 document.getElementById('reportContent').innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
                 return;
             }
+
+            const days = Array.isArray(data) ? data : (data.days || []);
+            const periodTotalUsd = Array.isArray(data)
+                ? days.reduce((sum, day) => sum + parseFloat(day.approx_usd_amount || 0), 0)
+                : parseFloat(data.total_usd_amount || 0);
+            const periodTotalUsdPaid = Array.isArray(data)
+                ? days.reduce((sum, day) => sum + parseFloat(day.approx_usd_paid || 0), 0)
+                : parseFloat(data.total_usd_paid || 0);
+            const periodTotalUsdBalance = Array.isArray(data)
+                ? days.reduce((sum, day) => sum + parseFloat(day.approx_usd_balance || 0), 0)
+                : parseFloat(data.total_usd_balance || 0);
             
-            if (!data || data.length === 0) {
+            if (!days || days.length === 0) {
                 document.getElementById('reportContent').innerHTML = '<p style="color: #666; text-align: center; padding: 40px;">No sales found for the selected period.</p>';
                 return;
             }
             
+            let periodTotalQty = 0;
+            let periodTotalAmount = 0;
+            let periodTotalPaid = 0;
+            let periodTotalBalance = 0;
+
+            days.forEach(day => {
+                periodTotalQty += parseFloat(day.total_quantity || 0);
+                periodTotalAmount += parseFloat(day.total_amount || 0);
+                periodTotalPaid += parseFloat(day.total_paid || 0);
+                periodTotalBalance += parseFloat(day.total_balance || 0);
+            });
+
+            const hidePaidAndBalanceInSummary = Math.abs(periodTotalPaid - periodTotalAmount) < 0.005;
+            const paidSummaryHtml = hidePaidAndBalanceInSummary ? '' : `
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">≈USD Paid</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #4caf50;">${formatCurrency(periodTotalUsdPaid, 'USD')}</div>
+                        </div>`;
+            const balanceSummaryHtml = hidePaidAndBalanceInSummary ? '' : `
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">≈USD Balance</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #f44336;">${formatCurrency(periodTotalUsdBalance, 'USD')}</div>
+                        </div>`;
+
             let html = `
+                <div class="report-summary" style="margin-bottom: 20px;">
+                    <h3 style="color: #1e3a5f; margin-bottom: 12px;">Summary</h3>
+                    <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: center;">
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Total Amount</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1e3a5f;">${formatCurrency(periodTotalAmount)}</div>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">≈USD Total</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1565c0;">${formatCurrency(periodTotalUsd, 'USD')}</div>
+                        </div>
+                        ${paidSummaryHtml}
+                        ${balanceSummaryHtml}
+                    </div>
+                </div>
                 <div class="table-container">
                     <table style="width: 100%; border-collapse: collapse;">
                         <thead>
@@ -574,7 +849,9 @@ function loadDailySalesReport() {
                                 <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Date</th>
                                 <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Customers</th>
                                 <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Suppliers</th>
+                                <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total Qty</th>
                                 <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total Amount</th>
+                                <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">≈USD Amount</th>
                                 <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total Paid</th>
                                 <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Balance</th>
                                 <th style="padding: 12px; text-align: center; border: 1px solid #ddd;">Actions</th>
@@ -583,7 +860,7 @@ function loadDailySalesReport() {
                         <tbody>
             `;
             
-            data.forEach(day => {
+            days.forEach(day => {
                 const date = new Date(day.date).toLocaleDateString('en-US', { 
                     year: 'numeric', 
                     month: 'long', 
@@ -591,13 +868,16 @@ function loadDailySalesReport() {
                 });
                 const customers = day.customers.join(', ') || '-';
                 const suppliers = day.suppliers.join(', ') || '-';
+                const approxUsd = day.approx_usd_amount != null ? formatCurrency(day.approx_usd_amount, 'USD') : '-';
                 
                 html += `
                     <tr style="border-bottom: 1px solid #ddd;">
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">${date}</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">${customers}</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">${suppliers}</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatNumber(day.total_quantity != null ? day.total_quantity : 0)}</td>
                         <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(day.total_amount)}</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #1565c0;" title="${dailySalesUsdRateTitle(day)}">${approxUsd}</td>
                         <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #4caf50;">${formatCurrency(day.total_paid)}</td>
                         <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: ${day.total_balance > 0 ? '#f44336' : '#4caf50'};">${formatCurrency(day.total_balance)}</td>
                         <td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
@@ -606,6 +886,18 @@ function loadDailySalesReport() {
                     </tr>
                 `;
             });
+
+            html += `
+                    <tr class="total-row">
+                        <td colspan="3" style="padding: 10px; border: 1px solid #ddd;"><strong>TOTAL</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd;"><strong>${formatNumber(periodTotalQty)}</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd;"><strong>${formatCurrency(periodTotalAmount)}</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #1565c0;"><strong>${formatCurrency(periodTotalUsd, 'USD')}</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #4caf50;"><strong>${formatCurrency(periodTotalPaid)}</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: ${periodTotalBalance > 0 ? '#f44336' : '#4caf50'};"><strong>${formatCurrency(periodTotalBalance)}</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;"></td>
+                    </tr>
+            `;
             
             html += `
                         </tbody>
@@ -646,9 +938,7 @@ function showDailyInvoice(date, dayDataStr) {
             sale.items.forEach(item => {
                 allItems.push({
                     ...item,
-                    customer_name: sale.customer_name,
-                    supplier_name: sale.supplier_name || '-',
-                    invoice_number: sale.invoice_number
+                    customer_name: sale.customer_name
                 });
             });
         });
@@ -669,11 +959,11 @@ function showDailyInvoice(date, dayDataStr) {
                         <h3 style="color: #1e3a5f; margin: 0 0 10px 0; font-size: 16px; border-bottom: 2px solid #1e3a5f; padding-bottom: 5px;">Invoice Details</h3>
                         <p style="margin: 5px 0;"><strong>Date:</strong> ${saleDate}</p>
                         <p style="margin: 5px 0;"><strong>Total Sales:</strong> ${dayData.sales.length}</p>
+                        <p style="margin: 5px 0;"><strong>Total Quantity (day):</strong> ${formatNumber(dayData.total_quantity != null ? dayData.total_quantity : 0)}</p>
                     </div>
                     <div>
                         <h3 style="color: #1e3a5f; margin: 0 0 10px 0; font-size: 16px; border-bottom: 2px solid #1e3a5f; padding-bottom: 5px;">Summary</h3>
                         <p style="margin: 5px 0;"><strong>Customers:</strong> ${dayData.customers.join(', ') || '-'}</p>
-                        <p style="margin: 5px 0;"><strong>Suppliers:</strong> ${dayData.suppliers.join(', ') || '-'}</p>
                     </div>
                 </div>
                 
@@ -682,11 +972,8 @@ function showDailyInvoice(date, dayDataStr) {
                     <thead>
                         <tr style="background-color: #1e3a5f; color: white;">
                             <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">#</th>
-                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Invoice No</th>
                             <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Customer</th>
-                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Supplier</th>
-                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item Code</th>
-                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item Name</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item / Type</th>
                             <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Quantity</th>
                             <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Unit Price</th>
                             <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total</th>
@@ -695,15 +982,14 @@ function showDailyInvoice(date, dayDataStr) {
                     <tbody>
         `;
         
+        const totalQuantity = allItems.reduce((sum, item) => sum + parseFloat(item.quantity || 0), 0);
+        
         allItems.forEach((item, index) => {
             invoiceHTML += `
                         <tr style="border-bottom: 1px solid #ddd;">
                             <td style="padding: 10px; border: 1px solid #ddd;">${index + 1}</td>
-                            <td style="padding: 10px; border: 1px solid #ddd;">${item.invoice_number}</td>
                             <td style="padding: 10px; border: 1px solid #ddd;">${item.customer_name}</td>
-                            <td style="padding: 10px; border: 1px solid #ddd;">${item.supplier_name}</td>
-                            <td style="padding: 10px; border: 1px solid #ddd;">${item.item_code}</td>
-                            <td style="padding: 10px; border: 1px solid #ddd;">${item.item_name}</td>
+                            <td style="padding: 10px; border: 1px solid #ddd;">${item.is_fast_line ? '<span style="color:#1565c0;font-weight:600;">Fast</span>' : escapeHtml(item.item_code || '—')}</td>
                             <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${parseFloat(item.quantity).toFixed(2)}</td>
                             <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(item.unit_price)}</td>
                             <td style="padding: 10px; text-align: right; border: 1px solid #ddd; font-weight: bold;">${formatCurrency(item.total_price)}</td>
@@ -720,16 +1006,32 @@ function showDailyInvoice(date, dayDataStr) {
                     <div style="width: 300px;">
                         <table style="width: 100%; border-collapse: collapse;">
                             <tr>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Total Quantity:</strong></td>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold;">${formatNumber(totalQuantity)}</td>
+                            </tr>
+                            <tr>
                                 <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
                                 <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; font-size: 18px; color: #1e3a5f;">${formatCurrency(dayData.total_amount)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>≈USD Total Amount:</strong></td>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; font-size: 16px; color: #1565c0;" title="${dailySalesUsdRateTitle(dayData)}">${dayData.approx_usd_amount != null ? formatCurrency(dayData.approx_usd_amount, 'USD') : '-'}</td>
                             </tr>
                             <tr>
                                 <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Total Paid:</strong></td>
                                 <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; color: #4caf50;">${formatCurrency(dayData.total_paid)}</td>
                             </tr>
                             <tr>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>≈USD Total Paid:</strong></td>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; font-size: 16px; color: #4caf50;" title="${dailySalesUsdRateTitle(dayData)}">${dayData.approx_usd_paid != null ? formatCurrency(dayData.approx_usd_paid, 'USD') : '-'}</td>
+                            </tr>
+                            <tr>
                                 <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Balance:</strong></td>
                                 <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; color: ${dayData.total_balance > 0 ? '#f44336' : '#4caf50'};">${formatCurrency(dayData.total_balance)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>≈USD Balance:</strong></td>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; font-size: 16px; color: #f44336;" title="${dailySalesUsdRateTitle(dayData)}">${dayData.approx_usd_balance != null ? formatCurrency(dayData.approx_usd_balance, 'USD') : '-'}</td>
                             </tr>
                         </table>
                     </div>
@@ -773,11 +1075,12 @@ function printDailyInvoice() {
     
     const printWindow = window.open('', '_blank');
     if (printWindow) {
+        const title = currentReportType === 'daily-purchases' ? 'Daily Purchase Invoice' : 'Daily Sales Invoice';
         printWindow.document.write(`
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Daily Sales Invoice</title>
+                <title>${title}</title>
                 <style>
                     @page {
                         margin: 1cm;
@@ -805,6 +1108,418 @@ function printDailyInvoice() {
         printWindow.document.close();
         printWindow.print();
     }
+}
+
+function loadReportRepresentatives() {
+    const select = document.getElementById('reportRepresentativeId');
+    if (!select) return Promise.resolve();
+    const current = select.value;
+    return fetch('/api/representatives')
+        .then(r => r.json())
+        .then(data => {
+            const reps = data.representatives || [];
+            select.innerHTML = '<option value="">All Representatives</option>';
+            reps.forEach(rep => {
+                const opt = document.createElement('option');
+                opt.value = rep.id;
+                opt.textContent = rep.is_active ? rep.name : `${rep.name} (inactive)`;
+                select.appendChild(opt);
+            });
+            if (current) select.value = current;
+        })
+        .catch(err => console.error('Error loading representatives:', err));
+}
+
+function loadDailyPurchasesReport() {
+    const startDate = document.getElementById('reportStartDate').value;
+    const endDate = document.getElementById('reportEndDate').value;
+    const repId = document.getElementById('reportRepresentativeId')?.value || '';
+
+    let url = '/api/reports/daily-purchases?';
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+    if (repId) url += `representative_id=${repId}&`;
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('reportContent').innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                return;
+            }
+
+            const days = Array.isArray(data) ? data : (data.days || []);
+            const periodTotalUsd = Array.isArray(data)
+                ? days.reduce((sum, day) => sum + parseFloat(day.approx_usd_amount || 0), 0)
+                : parseFloat(data.total_usd_amount || 0);
+
+            if (!days || days.length === 0) {
+                document.getElementById('reportContent').innerHTML = '<p style="color: #666; text-align: center; padding: 40px;">No purchases found for the selected period.</p>';
+                return;
+            }
+
+            let periodTotalQty = 0;
+            let periodTotalAmount = 0;
+
+            days.forEach(day => {
+                periodTotalQty += parseFloat(day.total_quantity || 0);
+                periodTotalAmount += parseFloat(day.total_amount || 0);
+            });
+
+            let html = `
+                <div class="report-summary" style="margin-bottom: 20px;">
+                    <h3 style="color: #1e3a5f; margin-bottom: 12px;">Summary</h3>
+                    <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: center;">
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Total Amount (base)</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1e3a5f;">${formatCurrency(periodTotalAmount)}</div>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">≈USD Total</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1565c0;">${formatCurrency(periodTotalUsd, 'USD')}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background-color: #1e3a5f; color: white;">
+                                <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Date</th>
+                                <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Representatives</th>
+                                <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total Qty</th>
+                                <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total Amount</th>
+                                <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">≈USD Amount</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
+
+            days.forEach(day => {
+                const date = new Date(day.date).toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                });
+                const representatives = (day.representatives || []).join(', ') || '—';
+                const approxUsd = day.approx_usd_amount != null ? formatCurrency(day.approx_usd_amount, 'USD') : '-';
+
+                html += `
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">${date}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${representatives}</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatNumber(day.total_quantity != null ? day.total_quantity : 0)}</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(day.total_amount)}</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #1565c0;" title="${dailySalesUsdRateTitle(day)}">${approxUsd}</td>
+                        <td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
+                            <button class="btn btn-primary btn-sm" onclick="showDailyPurchaseInvoice('${day.date}', ${JSON.stringify(day).replace(/'/g, "\\'").replace(/"/g, '&quot;')})">View Invoice</button>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    <tr class="total-row">
+                        <td colspan="2" style="padding: 10px; border: 1px solid #ddd;"><strong>TOTAL</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd;"><strong>${formatNumber(periodTotalQty)}</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd;"><strong>${formatCurrency(periodTotalAmount)}</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #ddd; color: #1565c0;"><strong>${formatCurrency(periodTotalUsd, 'USD')}</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;"></td>
+                    </tr>
+            `;
+
+            html += `
+                        </tbody>
+                    </table>
+                </div>
+            `;
+
+            document.getElementById('reportContent').innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading daily purchases report:', error);
+            document.getElementById('reportContent').innerHTML = '<p style="color: red;">Error loading report</p>';
+        });
+}
+
+function showDailyPurchaseInvoice(date, dayDataStr) {
+    const dayData = typeof dayDataStr === 'string' ? JSON.parse(dayDataStr.replace(/&quot;/g, '"')) : dayDataStr;
+
+    let marketPromise = Promise.resolve(currentMarket);
+    if (!currentMarket) {
+        marketPromise = loadCurrentMarketForReports();
+    }
+
+    marketPromise.then(market => {
+        const marketData = market || { name: 'Market', address: '', base_currency: 'USD' };
+        const purchaseDate = new Date(date).toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+
+        const purchaseList = dayData.purchases || dayData.sales || [];
+        const allItems = [];
+        purchaseList.forEach(purchase => {
+            (purchase.items || []).forEach(item => {
+                allItems.push({
+                    ...item,
+                    representative_name: purchase.representative_name || '—',
+                    invoice_number: purchase.invoice_number
+                });
+            });
+        });
+
+        let invoiceHTML = `
+            <div id="dailyInvoiceToPrint" style="font-family: Arial, sans-serif; color: #333;">
+                <div style="text-align: center; margin-bottom: 30px; border-bottom: 3px solid #1e3a5f; padding-bottom: 20px;">
+                    <h1 style="color: #1e3a5f; margin: 0 0 10px 0; font-size: 28px;">SARI TEXTILE WAREHOUSES</h1>
+                    <p style="margin: 5px 0; color: #666; font-size: 14px;">${marketData.address || ''}</p>
+                    <h2 style="color: #1e3a5f; margin: 20px 0 0 0; font-size: 22px;">DAILY PURCHASE INVOICE</h2>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px;">
+                    <div>
+                        <h3 style="color: #1e3a5f; margin: 0 0 10px 0; font-size: 16px; border-bottom: 2px solid #1e3a5f; padding-bottom: 5px;">Invoice Details</h3>
+                        <p style="margin: 5px 0;"><strong>Date:</strong> ${purchaseDate}</p>
+                        <p style="margin: 5px 0;"><strong>Total Purchases:</strong> ${purchaseList.length}</p>
+                        <p style="margin: 5px 0;"><strong>Total Quantity (day):</strong> ${formatNumber(dayData.total_quantity != null ? dayData.total_quantity : 0)}</p>
+                    </div>
+                    <div>
+                        <h3 style="color: #1e3a5f; margin: 0 0 10px 0; font-size: 16px; border-bottom: 2px solid #1e3a5f; padding-bottom: 5px;">Summary</h3>
+                        <p style="margin: 5px 0;"><strong>Representatives:</strong> ${(dayData.representatives || []).join(', ') || '—'}</p>
+                    </div>
+                </div>
+
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                    <thead>
+                        <tr style="background-color: #1e3a5f; color: white;">
+                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">#</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Container No</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Representative</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item / Type</th>
+                            <th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Description</th>
+                            <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Quantity</th>
+                            <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Unit Price</th>
+                            <th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        const totalQuantity = allItems.reduce((sum, item) => sum + parseFloat(item.quantity || 0), 0);
+
+        allItems.forEach((item, index) => {
+            invoiceHTML += `
+                        <tr style="border-bottom: 1px solid #ddd;">
+                            <td style="padding: 10px; border: 1px solid #ddd;">${index + 1}</td>
+                            <td style="padding: 10px; border: 1px solid #ddd;">${item.invoice_number}</td>
+                            <td style="padding: 10px; border: 1px solid #ddd;">${item.representative_name || '—'}</td>
+                            <td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.item_code || '—')}</td>
+                            <td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.item_name || '—')}</td>
+                            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${parseFloat(item.quantity).toFixed(2)}</td>
+                            <td style="padding: 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(item.unit_price, item.currency)}</td>
+                            <td style="padding: 10px; text-align: right; border: 1px solid #ddd; font-weight: bold;">${formatCurrency(item.total_price, item.currency)}</td>
+                        </tr>
+            `;
+        });
+
+        invoiceHTML += `
+                    </tbody>
+                </table>
+
+                <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
+                    <div style="width: 300px;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Total Quantity:</strong></td>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold;">${formatNumber(totalQuantity)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Total Amount (base):</strong></td>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; font-size: 18px; color: #1e3a5f;">${formatCurrency(dayData.total_amount)}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>≈USD Total Amount:</strong></td>
+                                <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; font-size: 16px; color: #1565c0;" title="${dailySalesUsdRateTitle(dayData)}">${dayData.approx_usd_amount != null ? formatCurrency(dayData.approx_usd_amount, 'USD') : '-'}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        let invoiceModal = document.getElementById('dailyInvoiceModal');
+        if (!invoiceModal) {
+            invoiceModal = document.createElement('div');
+            invoiceModal.id = 'dailyInvoiceModal';
+            invoiceModal.className = 'modal';
+            invoiceModal.innerHTML = `
+                <div class="modal-content" style="max-width: 900px;">
+                    <span class="close" onclick="closeDailyInvoiceModal()">&times;</span>
+                    <div id="dailyInvoiceContent" style="background: white; padding: 30px; border-radius: 5px;">
+                    </div>
+                    <div class="action-buttons" style="margin-top: 20px; text-align: center;">
+                        <button type="button" class="btn btn-primary" onclick="printDailyInvoice()">Print</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeDailyInvoiceModal()">Close</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(invoiceModal);
+        }
+
+        document.getElementById('dailyInvoiceContent').innerHTML = invoiceHTML;
+        invoiceModal.style.display = 'block';
+    });
+}
+
+function loadRepresentativeCollectionsReport() {
+    const startDate = document.getElementById('reportStartDate').value;
+    const endDate = document.getElementById('reportEndDate').value;
+    const repId = document.getElementById('reportRepresentativeId')?.value || '';
+
+    let url = '/api/reports/representative-collections?';
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+    if (repId) url += `representative_id=${repId}&`;
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('reportContent').innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                return;
+            }
+
+            const reps = data.representatives || [];
+            if (!reps.length) {
+                document.getElementById('reportContent').innerHTML = '<p style="color: #666; text-align: center; padding: 40px;">No tagged collections found for the selected period. Tag a representative on purchase containers to see them here.</p>';
+                return;
+            }
+
+            let periodLineCount = 0;
+            reps.forEach(rep => {
+                (rep.containers || []).forEach(c => {
+                    periodLineCount += (c.items || []).length;
+                });
+            });
+
+            let html = `
+                <div class="report-summary" style="margin-bottom: 20px;">
+                    <h3 style="color: #1e3a5f; margin-bottom: 12px;">Summary</h3>
+                    <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Containers</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1e3a5f;">${data.container_count || 0}</div>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Item Lines</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1e3a5f;">${periodLineCount}</div>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Total Quantity</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1e3a5f;">${formatNumber(data.total_quantity || 0)}</div>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Total Amount (base)</label>
+                            <div style="font-size: 20px; font-weight: bold; color: #1e3a5f;">${formatCurrency(data.total_amount_base || 0)}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            reps.forEach(rep => {
+                html += `
+                    <div style="margin-bottom: 32px; border: 1px solid #dce5f0; border-radius: 6px; overflow: hidden;">
+                        <div style="background: #1e3a5f; color: white; padding: 12px 16px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                            <strong style="font-size: 16px;">${escapeHtml(rep.representative_name)}</strong>
+                            <span>${rep.container_count} container(s) · Qty ${formatNumber(rep.total_quantity)} · ${formatCurrency(rep.total_amount_base)}</span>
+                        </div>
+                `;
+
+                (rep.containers || []).forEach(c => {
+                    const items = c.items || [];
+                    html += `
+                        <div style="padding: 12px 14px 4px; background: #f4f7fb; border-top: 1px solid #dce5f0;">
+                            <div style="display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: #2a3a4d;">
+                                <span><strong>Date:</strong> ${c.date}</span>
+                                <span><strong>Container:</strong> ${escapeHtml(c.container_number)}</span>
+                                <span><strong>Qty:</strong> ${formatNumber(c.total_quantity)}</span>
+                                <span><strong>Amount:</strong> ${formatCurrency(c.total_amount_original, c.currency)}
+                                    <span style="color:#666;">(${formatCurrency(c.total_amount_base)} base)</span>
+                                </span>
+                                <span><strong>Rate:</strong> ${parseFloat(c.exchange_rate || 1).toFixed(4)}</span>
+                            </div>
+                        </div>
+                        <div class="table-container" style="margin: 0;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #e8eef6;">
+                                        <th style="padding: 8px 10px; text-align: left; border: 1px solid #ddd; font-size: 12px;">#</th>
+                                        <th style="padding: 8px 10px; text-align: left; border: 1px solid #ddd; font-size: 12px;">Item Code</th>
+                                        <th style="padding: 8px 10px; text-align: left; border: 1px solid #ddd; font-size: 12px;">Item Name</th>
+                                        <th style="padding: 8px 10px; text-align: right; border: 1px solid #ddd; font-size: 12px;">Quantity</th>
+                                        <th style="padding: 8px 10px; text-align: right; border: 1px solid #ddd; font-size: 12px;">Unit Price</th>
+                                        <th style="padding: 8px 10px; text-align: right; border: 1px solid #ddd; font-size: 12px;">Line Total</th>
+                                        <th style="padding: 8px 10px; text-align: right; border: 1px solid #ddd; font-size: 12px;">Line Total (base)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+
+                    if (!items.length) {
+                        html += `
+                                    <tr>
+                                        <td colspan="7" style="padding: 10px; border: 1px solid #ddd; color: #666; text-align: center;">No items in this container</td>
+                                    </tr>
+                        `;
+                    } else {
+                        items.forEach((item, idx) => {
+                            html += `
+                                    <tr>
+                                        <td style="padding: 8px 10px; border: 1px solid #ddd;">${idx + 1}</td>
+                                        <td style="padding: 8px 10px; border: 1px solid #ddd;">${escapeHtml(item.item_code || '—')}</td>
+                                        <td style="padding: 8px 10px; border: 1px solid #ddd;">${escapeHtml(item.item_name || '—')}</td>
+                                        <td style="padding: 8px 10px; text-align: right; border: 1px solid #ddd;">${formatNumber(item.quantity)}</td>
+                                        <td style="padding: 8px 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(item.unit_price, item.currency || c.currency)}</td>
+                                        <td style="padding: 8px 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(item.total_price, item.currency || c.currency)}</td>
+                                        <td style="padding: 8px 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(item.total_price_base != null ? item.total_price_base : (item.total_price * (c.exchange_rate || 1)))}</td>
+                                    </tr>
+                            `;
+                        });
+                    }
+
+                    html += `
+                                </tbody>
+                                <tfoot>
+                                    <tr style="background: #f8fafc; font-weight: 600;">
+                                        <td colspan="3" style="padding: 8px 10px; border: 1px solid #ddd; text-align: right;">Container total</td>
+                                        <td style="padding: 8px 10px; text-align: right; border: 1px solid #ddd;">${formatNumber(c.total_quantity)}</td>
+                                        <td style="padding: 8px 10px; border: 1px solid #ddd;"></td>
+                                        <td style="padding: 8px 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(c.total_amount_original, c.currency)}</td>
+                                        <td style="padding: 8px 10px; text-align: right; border: 1px solid #ddd;">${formatCurrency(c.total_amount_base)}</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    `;
+                });
+
+                html += `
+                        <div style="padding: 10px 14px; background: #eef3f9; border-top: 2px solid #1e3a5f; display: flex; justify-content: flex-end; gap: 24px; flex-wrap: wrap; font-weight: 700; color: #1e3a5f;">
+                            <span>${escapeHtml(rep.representative_name)} total qty: ${formatNumber(rep.total_quantity)}</span>
+                            <span>Total (base): ${formatCurrency(rep.total_amount_base)}</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById('reportContent').innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading representative collections:', error);
+            document.getElementById('reportContent').innerHTML = '<p style="color: red;">Error loading report</p>';
+        });
 }
 
 function printReport() {
@@ -1094,6 +1809,11 @@ function exportReportToExcel() {
             const supplierId = document.getElementById('inventoryStockSupplier')?.value;
             if (supplierId) url += `?supplier_id=${supplierId}`;
             break;
+        case 'inventory-stock-at-cost':
+            url = `/api/reports/inventory-stock-at-cost/export`;
+            const supplierAtCostId = document.getElementById('inventoryStockAtCostSupplier')?.value;
+            if (supplierAtCostId) url += `?supplier_id=${supplierAtCostId}`;
+            break;
         case 'inventory-snapshot':
             const snapshotDate = document.getElementById('inventorySnapshotDate')?.value;
             const snapshotSupplierId = document.getElementById('inventorySnapshotSupplier')?.value;
@@ -1121,6 +1841,8 @@ function exportReportToExcel() {
             url = `/api/safe/collected-money-report/export?`;
             if (startDate) url += `start_date=${startDate}&`;
             if (endDate) url += `end_date=${endDate}&`;
+            const collectedMoneyCustomerType = document.getElementById('collectedMoneyCustomerType')?.value || 'both';
+            url += `customer_type=${collectedMoneyCustomerType}&`;
             break;
         case 'safe-out':
             url = `/api/reports/safe-out/export?`;
@@ -1162,11 +1884,346 @@ function exportReportToExcel() {
         case 'last-purchase-price':
             exportLastPurchasePriceReport();
             return;
+        case 'last-purchase-cog':
+            const lastPurchaseCogSupplierId = document.getElementById('lastPurchaseCogSupplier')?.value || '';
+            const lastPurchaseCogItemId = document.getElementById('lastPurchaseCogItem')?.value || '';
+            url = `/api/reports/last-purchase-cog/export?`;
+            if (lastPurchaseCogSupplierId) url += `supplier_id=${lastPurchaseCogSupplierId}&`;
+            if (lastPurchaseCogItemId) url += `item_id=${lastPurchaseCogItemId}&`;
+            break;
     }
     
     if (url) {
         window.location.href = url;
     }
+}
+
+function setProfitLossColumnSelectorVisible(visible) {
+    const el = document.getElementById('profitLossColumnSelector');
+    if (el) el.style.display = visible ? 'block' : 'none';
+}
+
+function setSafeOutColumnSelectorVisible(visible) {
+    const el = document.getElementById('safeOutColumnSelector');
+    if (el) el.style.display = visible ? 'block' : 'none';
+}
+
+function getDefaultProfitLossColumnVisibility() {
+    return {
+        item_code: true,
+        quantity_sold: true,
+        total_sales: true,
+        cog: true,
+        average_purchase_price: true,
+        avg_purchase_price_supplier: true,
+        total_cost: true,
+        profit: true,
+        profit_margin: true,
+        notes: true
+    };
+}
+
+function getProfitLossColumnVisibility() {
+    const saved = localStorage.getItem('profitLossColumnVisibility');
+    if (saved) {
+        try {
+            return { ...getDefaultProfitLossColumnVisibility(), ...JSON.parse(saved) };
+        } catch (e) {
+            console.error('Error parsing profit loss column visibility:', e);
+        }
+    }
+    return getDefaultProfitLossColumnVisibility();
+}
+
+function isProfitLossColumnActive(column, visibility, isFIFO) {
+    if ((column === 'average_purchase_price' || column === 'avg_purchase_price_supplier') && isFIFO) {
+        return false;
+    }
+    return visibility[column] !== false;
+}
+
+function countActiveProfitLossColumns(visibility, isFIFO) {
+    return Object.keys(getDefaultProfitLossColumnVisibility()).filter(
+        col => isProfitLossColumnActive(col, visibility, isFIFO)
+    ).length;
+}
+
+function profitLossHeaderCell(column, label, className = '') {
+    const classes = ['sortable', className].filter(Boolean).join(' ');
+    return `<th class="${classes}" data-column="${column}">${label}<span class="resizer"></span></th>`;
+}
+
+function profitLossSortAttr(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+}
+
+function profitLossTd(column, content, sortValue, className = '', style = '') {
+    const cls = className ? ` class="${className}"` : '';
+    const sty = style ? ` style="${style}"` : '';
+    const sortVal = sortValue !== undefined && sortValue !== null ? profitLossSortAttr(sortValue) : '';
+    const sortAttr = sortVal !== '' ? ` data-sort-value="${sortVal}"` : '';
+    return `<td data-column="${column}"${sortAttr}${cls}${sty}>${content}</td>`;
+}
+
+function buildProfitLossTableHeader(visibility, isFIFO) {
+    let html = '<div class="report-table-wrapper" id="profitLossReportTable"><table id="profitLossTable"><thead><tr>';
+    if (isProfitLossColumnActive('item_code', visibility, isFIFO)) {
+        html += profitLossHeaderCell('item_code', 'Item Code');
+    }
+    if (isProfitLossColumnActive('quantity_sold', visibility, isFIFO)) {
+        html += profitLossHeaderCell('quantity_sold', 'Quantity Sold', 'text-right');
+    }
+    if (isProfitLossColumnActive('total_sales', visibility, isFIFO)) {
+        html += profitLossHeaderCell('total_sales', 'Total Sales', 'text-right');
+    }
+    if (isProfitLossColumnActive('cog', visibility, isFIFO)) {
+        html += profitLossHeaderCell('cog', 'COG', 'text-right');
+    }
+    if (isProfitLossColumnActive('average_purchase_price', visibility, isFIFO)) {
+        html += profitLossHeaderCell('average_purchase_price', 'Average Purchase Price', 'text-right');
+    }
+    if (isProfitLossColumnActive('avg_purchase_price_supplier', visibility, isFIFO)) {
+        html += profitLossHeaderCell('avg_purchase_price_supplier', 'Avg Purchase Price (Supplier Curr.)', 'text-right');
+    }
+    if (isProfitLossColumnActive('total_cost', visibility, isFIFO)) {
+        html += profitLossHeaderCell('total_cost', 'Total Cost', 'text-right');
+    }
+    if (isProfitLossColumnActive('profit', visibility, isFIFO)) {
+        html += profitLossHeaderCell('profit', 'Profit', 'text-right');
+    }
+    if (isProfitLossColumnActive('profit_margin', visibility, isFIFO)) {
+        html += profitLossHeaderCell('profit_margin', 'Profit Margin %', 'text-right');
+    }
+    if (isProfitLossColumnActive('notes', visibility, isFIFO)) {
+        html += profitLossHeaderCell('notes', 'Notes');
+    }
+    html += '</tr></thead><tbody>';
+    return html;
+}
+
+function buildProfitLossItemRow(item, index, visibility, isFIFO) {
+    const provStyle = item.provisional_cost
+        ? 'background: #ffebee; color: #b71c1c;'
+        : '';
+    let html = `<tr class="item-row" data-item-index="${index}" style="${provStyle}">`;
+
+    if (isProfitLossColumnActive('item_code', visibility, isFIFO)) {
+        html += profitLossTd('item_code', item.item_code || '', item.item_code || '');
+    }
+    if (isProfitLossColumnActive('quantity_sold', visibility, isFIFO)) {
+        html += profitLossTd('quantity_sold', item.quantity_sold.toFixed(2), item.quantity_sold, 'text-right');
+    }
+    if (isProfitLossColumnActive('total_sales', visibility, isFIFO)) {
+        html += profitLossTd('total_sales', formatCurrency(item.total_sales), item.total_sales, 'text-right');
+    }
+    if (isProfitLossColumnActive('cog', visibility, isFIFO)) {
+        html += profitLossTd('cog', formatCurrency(item.cog || 0), item.cog || 0, 'text-right');
+    }
+    if (isProfitLossColumnActive('average_purchase_price', visibility, isFIFO)) {
+        html += profitLossTd('average_purchase_price', formatCurrency(item.average_purchase_price || 0), item.average_purchase_price || 0, 'text-right');
+    }
+    if (isProfitLossColumnActive('avg_purchase_price_supplier', visibility, isFIFO)) {
+        const avgSupplier = item.average_purchase_price_supplier_currency != null
+            ? formatCurrency(item.average_purchase_price_supplier_currency, item.supplier_currency || '')
+            : '-';
+        const avgSort = item.average_purchase_price_supplier_currency != null
+            ? item.average_purchase_price_supplier_currency
+            : '';
+        html += profitLossTd('avg_purchase_price_supplier', avgSupplier, avgSort, 'text-right');
+    }
+    if (isProfitLossColumnActive('total_cost', visibility, isFIFO)) {
+        html += profitLossTd('total_cost', formatCurrency(item.total_cost), item.total_cost, 'text-right');
+    }
+    if (isProfitLossColumnActive('profit', visibility, isFIFO)) {
+        html += profitLossTd(
+            'profit',
+            formatCurrency(item.profit),
+            item.profit,
+            'text-right',
+            `color: ${item.profit >= 0 ? '#4caf50' : '#f44336'}; font-weight: 600;`
+        );
+    }
+    if (isProfitLossColumnActive('profit_margin', visibility, isFIFO)) {
+        html += profitLossTd('profit_margin', `${item.profit_margin.toFixed(2)}%`, item.profit_margin, 'text-right');
+    }
+    if (isProfitLossColumnActive('notes', visibility, isFIFO)) {
+        const noteText = item.provisional_cost ? 'Last purchase cost (book stock ≤ 0)' : '';
+        html += profitLossTd('notes', noteText, noteText, '', 'font-size: 12px;');
+    }
+
+    html += '</tr>';
+    return html;
+}
+
+function buildProfitLossTotalRow(data, visibility, isFIFO) {
+    let html = '<tr class="total-row">';
+
+    let labelColspan = 0;
+    if (isProfitLossColumnActive('item_code', visibility, isFIFO)) labelColspan++;
+    labelColspan = Math.max(1, labelColspan);
+
+    if (isProfitLossColumnActive('item_code', visibility, isFIFO)) {
+        html += `<td colspan="${labelColspan}" data-column="item_code"><strong>TOTAL</strong></td>`;
+    } else {
+        html += '<td><strong>TOTAL</strong></td>';
+    }
+
+    if (isProfitLossColumnActive('quantity_sold', visibility, isFIFO)) {
+        html += `<td class="text-right" data-column="quantity_sold">${data.items.reduce((sum, item) => sum + item.quantity_sold, 0).toFixed(2)}</td>`;
+    }
+    if (isProfitLossColumnActive('total_sales', visibility, isFIFO)) {
+        html += `<td class="text-right" data-column="total_sales"><strong>${formatCurrency(data.totals.total_sales)}</strong></td>`;
+    }
+    if (isProfitLossColumnActive('cog', visibility, isFIFO)) {
+        html += `<td class="text-right" data-column="cog"><strong>${formatCurrency(data.totals.total_cog || 0)}</strong></td>`;
+    }
+    if (isProfitLossColumnActive('average_purchase_price', visibility, isFIFO)) {
+        html += '<td class="text-right" data-column="average_purchase_price">-</td>';
+    }
+    if (isProfitLossColumnActive('avg_purchase_price_supplier', visibility, isFIFO)) {
+        html += '<td class="text-right" data-column="avg_purchase_price_supplier">-</td>';
+    }
+    if (isProfitLossColumnActive('total_cost', visibility, isFIFO)) {
+        html += `<td class="text-right" data-column="total_cost"><strong>${formatCurrency(data.totals.total_cost)}</strong></td>`;
+    }
+    if (isProfitLossColumnActive('profit', visibility, isFIFO)) {
+        html += `<td class="text-right" data-column="profit" style="color: ${data.totals.total_profit >= 0 ? '#4caf50' : '#f44336'}"><strong>${formatCurrency(data.totals.total_profit)}</strong></td>`;
+    }
+    if (isProfitLossColumnActive('profit_margin', visibility, isFIFO)) {
+        html += `<td class="text-right" data-column="profit_margin"><strong>${data.totals.profit_margin.toFixed(2)}%</strong></td>`;
+    }
+    if (isProfitLossColumnActive('notes', visibility, isFIFO)) {
+        html += '<td data-column="notes"></td>';
+    }
+
+    html += '</tr>';
+    return html;
+}
+
+const PROFIT_LOSS_SORT_STORAGE_KEY = 'profitLossTableSort';
+
+function getProfitLossSortValue(row, column) {
+    const cell = row.querySelector(`td[data-column="${column}"]`);
+    if (!cell) return '';
+    if (cell.hasAttribute('data-sort-value')) {
+        return cell.getAttribute('data-sort-value');
+    }
+    return cell.textContent.trim();
+}
+
+function compareProfitLossSortValues(aVal, bVal, isAsc) {
+    if (aVal === '' && bVal === '') return 0;
+    if (aVal === '') return 1;
+    if (bVal === '') return -1;
+
+    const aNum = parseFloat(aVal);
+    const bNum = parseFloat(bVal);
+    if (!isNaN(aNum) && !isNaN(bNum) && isFinite(aNum) && isFinite(bNum)) {
+        return isAsc ? aNum - bNum : bNum - aNum;
+    }
+
+    const cmp = String(aVal).localeCompare(String(bVal), undefined, { numeric: true, sensitivity: 'base' });
+    return isAsc ? cmp : -cmp;
+}
+
+function sortProfitLossTableByColumn(column, isAsc) {
+    const table = document.getElementById('profitLossTable');
+    if (!table) return;
+
+    const tbody = table.querySelector('tbody');
+    if (!tbody) return;
+
+    const itemRows = Array.from(tbody.querySelectorAll('tr.item-row'));
+    if (itemRows.length === 0) return;
+
+    const batchRowsByIndex = {};
+    tbody.querySelectorAll('tr.batch-details-row').forEach(row => {
+        batchRowsByIndex[row.getAttribute('data-item-index')] = row;
+    });
+    const totalRow = tbody.querySelector('tr.total-row');
+
+    itemRows.sort((a, b) => {
+        const aVal = getProfitLossSortValue(a, column);
+        const bVal = getProfitLossSortValue(b, column);
+        return compareProfitLossSortValues(aVal, bVal, isAsc);
+    });
+
+    itemRows.forEach(row => {
+        tbody.appendChild(row);
+        const itemIndex = row.getAttribute('data-item-index');
+        if (itemIndex && batchRowsByIndex[itemIndex]) {
+            tbody.appendChild(batchRowsByIndex[itemIndex]);
+        }
+    });
+
+    if (totalRow) {
+        tbody.appendChild(totalRow);
+    }
+}
+
+function saveProfitLossSort(column, isAsc) {
+    try {
+        localStorage.setItem(PROFIT_LOSS_SORT_STORAGE_KEY, JSON.stringify({ column, isAsc }));
+    } catch (e) {
+        console.warn('Could not save profit loss sort state:', e);
+    }
+}
+
+function restoreProfitLossSort() {
+    const table = document.getElementById('profitLossTable');
+    if (!table) return;
+
+    try {
+        const saved = localStorage.getItem(PROFIT_LOSS_SORT_STORAGE_KEY);
+        if (!saved) return;
+
+        const { column, isAsc } = JSON.parse(saved);
+        const header = table.querySelector(`thead th[data-column="${column}"]`);
+        if (!header || header.style.display === 'none') return;
+
+        table.querySelectorAll('thead th').forEach(th => {
+            th.classList.remove('sort-asc', 'sort-desc');
+        });
+        header.classList.add(isAsc ? 'sort-asc' : 'sort-desc');
+        sortProfitLossTableByColumn(column, isAsc);
+    } catch (e) {
+        console.warn('Could not restore profit loss sort state:', e);
+    }
+}
+
+function initializeProfitLossTableSorting() {
+    const table = document.getElementById('profitLossTable');
+    if (!table) return;
+
+    table.querySelectorAll('thead th.sortable').forEach(th => {
+        th.style.cursor = 'pointer';
+        th.title = 'Click to sort';
+
+        th.addEventListener('click', (e) => {
+            if (e.target.closest('.resizer')) return;
+
+            const column = th.getAttribute('data-column');
+            if (!column) return;
+
+            const tbody = table.querySelector('tbody');
+            const firstRow = tbody?.querySelector('tr');
+            if (!firstRow || firstRow.querySelector('.empty-state')) return;
+
+            const isAsc = th.classList.contains('sort-asc');
+            const newIsAsc = !isAsc;
+
+            table.querySelectorAll('thead th').forEach(header => {
+                header.classList.remove('sort-asc', 'sort-desc');
+            });
+            th.classList.add(newIsAsc ? 'sort-asc' : 'sort-desc');
+
+            saveProfitLossSort(column, newIsAsc);
+            sortProfitLossTableByColumn(column, newIsAsc);
+        });
+    });
+
+    restoreProfitLossSort();
 }
 
 function loadProfitLossReport() {
@@ -1194,6 +2251,12 @@ function loadProfitLossReport() {
             
             let html = generateReportHeader('Profit & Loss Report', { startDate: startDateDisplay, endDate: endDateDisplay });
             
+            if (data.has_provisional_costs) {
+                html += `<div style="margin-bottom: 16px; padding: 12px 14px; background: #ffebee; border-left: 4px solid #c62828; border-radius: 4px; color: #b71c1c; font-size: 14px; line-height: 1.5;">
+                    <strong>Provisional cost:</strong> Red rows use <strong>last purchase</strong> unit cost (base currency) because book stock is zero or negative and reported COGS from ${isFIFO ? 'FIFO' : 'average cost'} was zero. Margins are indicative only for those lines.
+                </div>`;
+            }
+            
             html += `<div class="report-summary">
                 <h3>Summary</h3>
                 <div class="report-summary-grid">
@@ -1220,42 +2283,20 @@ function loadProfitLossReport() {
                 </div>
             </div>`;
             
-            html += '<div class="report-table-wrapper"><table><thead><tr>';
-            html += '<th>Item Code</th><th>Item Name</th><th class="text-right">Quantity Sold</th><th class="text-right">Total Sales</th><th class="text-right">COG</th>';
-            if (!isFIFO) {
-                html += '<th class="text-right">Average Purchase Price</th>';
-                html += '<th class="text-right">Avg Purchase Price (Supplier Curr.)</th>';
-            }
-            html += '<th class="text-right">Total Cost</th><th class="text-right">Profit</th><th class="text-right">Profit Margin %</th>';
-            html += '</tr></thead><tbody>';
+            const columnVisibility = getProfitLossColumnVisibility();
+            const visibleColumnCount = countActiveProfitLossColumns(columnVisibility, isFIFO);
+
+            html += buildProfitLossTableHeader(columnVisibility, isFIFO);
             
             if (data.items.length === 0) {
-                const colspan = isFIFO ? 8 : 10;
-                html += `<tr><td colspan="${colspan}" class="empty-state">No data available</td></tr>`;
+                html += `<tr><td colspan="${Math.max(1, visibleColumnCount)}" class="empty-state">No data available</td></tr>`;
             } else {
                 data.items.forEach((item, index) => {
-                    html += `<tr class="item-row" data-item-index="${index}">
-                        <td>${item.item_code}</td>
-                        <td>${item.item_name}</td>
-                        <td class="text-right">${item.quantity_sold.toFixed(2)}</td>
-                        <td class="text-right">${formatCurrency(item.total_sales)}</td>
-                        <td class="text-right">${formatCurrency(item.cog || 0)}</td>`;
+                    html += buildProfitLossItemRow(item, index, columnVisibility, isFIFO);
                     
-                    if (!isFIFO) {
-                        html += `<td class="text-right">${formatCurrency(item.average_purchase_price || 0)}</td>`;
-                        const avgSupplier = item.average_purchase_price_supplier_currency != null ? formatCurrency(item.average_purchase_price_supplier_currency, item.supplier_currency || '') : '-';
-                        html += `<td class="text-right">${avgSupplier}</td>`;
-                    }
-                    
-                    html += `<td class="text-right">${formatCurrency(item.total_cost)}</td>
-                        <td class="text-right" style="color: ${item.profit >= 0 ? '#4caf50' : '#f44336'}; font-weight: 600;">${formatCurrency(item.profit)}</td>
-                        <td class="text-right">${item.profit_margin.toFixed(2)}%</td>
-                    </tr>`;
-                    
-                    // Add batch details row for FIFO mode
                     if (isFIFO && item.batch_details && item.batch_details.length > 0) {
                         html += `<tr class="batch-details-row" data-item-index="${index}" style="background-color: #f5f5f5; display: none;">
-                            <td colspan="${isFIFO ? 8 : 10}" style="padding: 15px;">
+                            <td colspan="${Math.max(1, visibleColumnCount)}" style="padding: 15px;">
                                 <div style="margin-left: 20px;">
                                     <strong style="color: #1e3a5f; font-size: 13px;">Batch Breakdown:</strong>
                                     <table style="width: 100%; margin-top: 10px; font-size: 12px; border-collapse: collapse;">
@@ -1294,26 +2335,19 @@ function loadProfitLossReport() {
                     }
                 });
                 
-                html += `<tr class="total-row">
-                    <td colspan="2"><strong>TOTAL</strong></td>
-                    <td class="text-right">${data.items.reduce((sum, item) => sum + item.quantity_sold, 0).toFixed(2)}</td>
-                    <td class="text-right"><strong>${formatCurrency(data.totals.total_sales)}</strong></td>
-                    <td class="text-right"><strong>${formatCurrency(data.totals.total_cog || 0)}</strong></td>`;
-                
-                if (!isFIFO) {
-                    html += `<td class="text-right">-</td><td class="text-right">-</td>`;
-                }
-                
-                html += `<td class="text-right"><strong>${formatCurrency(data.totals.total_cost)}</strong></td>
-                    <td class="text-right" style="color: ${data.totals.total_profit >= 0 ? '#4caf50' : '#f44336'}"><strong>${formatCurrency(data.totals.total_profit)}</strong></td>
-                    <td class="text-right"><strong>${data.totals.profit_margin.toFixed(2)}%</strong></td>
-                </tr>`;
+                html += buildProfitLossTotalRow(data, columnVisibility, isFIFO);
             }
             
             html += '</tbody></table></div>';
             html += generateReportFooter();
             
             document.getElementById('reportContent').innerHTML = html;
+
+            setTimeout(() => {
+                initializeReportColumnResizing('profitLossReportTable');
+                applySavedProfitLossColumnVisibility();
+                initializeProfitLossTableSorting();
+            }, 100);
             
             // Add click handler for expanding batch details in FIFO mode (after HTML is inserted)
             if (isFIFO) {
@@ -1343,25 +2377,69 @@ function loadProfitLossReport() {
         });
 }
 
+let inventoryReportItems = [];
+
 function loadItemsForInventoryReport() {
     fetch('/api/items')
         .then(response => response.json())
         .then(data => {
-            const select = document.getElementById('inventoryReportItem');
-            select.innerHTML = '<option value="">All Items</option>';
-            data.forEach(item => {
-                const option = document.createElement('option');
-                option.value = item.id;
-                option.textContent = `${item.code} - ${item.name}`;
-                select.appendChild(option);
-            });
-            
+            inventoryReportItems = data;
+            filterInventoryReportItems('');
             // Set selected item if currentItemId is set
             if (currentItemId) {
-                select.value = currentItemId;
+                const item = data.find(i => String(i.id) === String(currentItemId));
+                const displayText = item ? `${item.code || ''} ${item.name || ''}`.trim() || 'Unnamed Item' : '';
+                selectInventoryReportItem(currentItemId, displayText);
             }
         })
         .catch(error => console.error('Error loading items:', error));
+}
+
+function showInventoryReportItemDropdown() {
+    const dropdown = document.getElementById('inventoryReportItemDropdown');
+    if (dropdown) dropdown.style.display = 'block';
+}
+
+function hideInventoryReportItemDropdown() {
+    const dropdown = document.getElementById('inventoryReportItemDropdown');
+    if (dropdown) dropdown.style.display = 'none';
+}
+
+function filterInventoryReportItems(searchTerm) {
+    const dropdown = document.getElementById('inventoryReportItemDropdown');
+    if (!dropdown) return;
+    const searchLower = (searchTerm || '').toLowerCase();
+    const filteredItems = inventoryReportItems.filter(item => {
+        const code = (item.code || '').toLowerCase();
+        const name = (item.name || '').toLowerCase();
+        return `${code} ${name}`.trim().includes(searchLower);
+    });
+    dropdown.innerHTML = '';
+    const allDiv = document.createElement('div');
+    allDiv.className = 'dropdown-item';
+    allDiv.textContent = 'All Items';
+    allDiv.style.cssText = 'padding: 10px; cursor: pointer; border-bottom: 1px solid var(--border-color);';
+    allDiv.onclick = () => selectInventoryReportItem('', 'All Items');
+    dropdown.appendChild(allDiv);
+    filteredItems.forEach(item => {
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'dropdown-item';
+        itemDiv.style.cssText = 'padding: 10px; cursor: pointer; border-bottom: 1px solid var(--border-color);';
+        const displayText = `${item.code || ''} ${item.name || ''}`.trim() || 'Unnamed Item';
+        itemDiv.textContent = displayText;
+        itemDiv.onclick = () => selectInventoryReportItem(item.id, displayText);
+        dropdown.appendChild(itemDiv);
+    });
+    if (searchTerm || filteredItems.length > 0) showInventoryReportItemDropdown();
+}
+
+function selectInventoryReportItem(itemId, displayText) {
+    const hiddenInput = document.getElementById('inventoryReportItem');
+    const searchInput = document.getElementById('inventoryReportItemSearch');
+    if (hiddenInput) hiddenInput.value = itemId || '';
+    if (searchInput) searchInput.value = displayText || '';
+    hideInventoryReportItemDropdown();
+    if (currentReportType === 'inventory') loadInventoryReport();
 }
 
 function calculateMovementTotals(data) {
@@ -1393,6 +2471,134 @@ function renderMovementSummary(data) {
     `;
 }
 
+function filterMovementsBySalesPrice(movements, filter) {
+    if (!filter || !movements) return movements || [];
+    return movements.filter((m) => {
+        if (m.type !== 'Sale') return false;
+        if (String(m.currency || '') !== String(filter.currency || '')) return false;
+        return Math.abs(Number(m.unit_price) - Number(filter.unit_price)) < INV_SALES_PRICE_EPS;
+    });
+}
+
+function salesPriceBreakdownRowSelected(price, filter) {
+    if (!filter) return false;
+    if (String(price.currency || '') !== String(filter.currency || '')) return false;
+    return Math.abs(Number(price.unit_price) - Number(filter.unit_price)) < INV_SALES_PRICE_EPS;
+}
+
+function escapeHtmlAttr(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;');
+}
+
+function renderInventoryMovementDetailRowsHtml(movements, emptyMessage) {
+    const emptyMsg = emptyMessage || 'No movements found';
+    let html = '';
+    if (!movements || movements.length === 0) {
+        html += `<tr><td colspan="9" class="empty-state">${emptyMsg}</td></tr>`;
+    } else {
+        movements.forEach((movement) => {
+            let referenceLink = '';
+            if (movement.type === 'Purchase' && movement.container_id) {
+                referenceLink = `<a href="/purchases?container_id=${movement.container_id}" style="color: #1e3a5f; text-decoration: underline; cursor: pointer;" title="View Purchase Container">${movement.container_number || 'N/A'}</a>`;
+            } else if (movement.type === 'Sale' && movement.sale_id) {
+                referenceLink = `<a href="/sales?sale_id=${movement.sale_id}&edit=1" target="_blank" rel="noopener noreferrer" style="color: #1e3a5f; text-decoration: underline; cursor: pointer;" title="Edit sale (opens in new tab)">${movement.invoice_number || 'N/A'}</a>`;
+            } else {
+                referenceLink = movement.container_number || movement.invoice_number || 'N/A';
+            }
+            html += `<tr>
+                <td>${movement.date}</td>
+                <td><span class="badge badge-${movement.type.toLowerCase()}">${movement.type}</span></td>
+                <td>${movement.item_code}</td>
+                <td>${movement.item_name}</td>
+                <td class="text-right">${movement.quantity}</td>
+                <td class="text-right">${formatCurrency(movement.unit_price, movement.currency)}</td>
+                <td class="text-right">${formatCurrency(movement.total_price, movement.currency)}</td>
+                <td>${movement.currency}</td>
+                <td>${referenceLink}</td>
+            </tr>`;
+        });
+    }
+    return html;
+}
+
+function buildInventoryReportHtml(movements, breakdown, itemId) {
+    let html = '';
+    if (itemId && breakdown) {
+        html += '<div style="margin-bottom: 30px;">';
+
+        if (breakdown.purchase_prices && breakdown.purchase_prices.length > 0) {
+            html += '<h3 style="color: var(--text-primary); margin-bottom: 15px; transition: color 0.3s ease;">Purchase Prices Breakdown</h3>';
+            html += '<p style="margin: 0 0 10px 0; font-size: 13px; color: var(--text-secondary);">Unit cost = unit price + COG allocated from container expenses (supplier currency).</p>';
+            html += '<div class="table-container" style="margin-bottom: 20px;"><table><thead><tr>';
+            html += '<th class="text-right">Unit Price</th><th class="text-right">Unit Cost</th><th>Currency</th><th class="text-right">Total Quantity</th><th class="text-right">Total Amount</th>';
+            html += '</tr></thead><tbody>';
+            breakdown.purchase_prices.forEach((price) => {
+                const uc = price.unit_cost != null && price.unit_cost !== undefined ? price.unit_cost : (Number(price.unit_price) || 0);
+                html += `<tr>
+                    <td class="text-right">${formatCurrency(price.unit_price, price.currency)}</td>
+                    <td class="text-right">${formatCurrency(uc, price.currency)}</td>
+                    <td>${price.currency}</td>
+                    <td class="text-right">${price.total_quantity.toFixed(2)}</td>
+                    <td class="text-right">${formatCurrency(price.total_amount, price.currency)}</td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+        }
+
+        if (breakdown.sales_prices && breakdown.sales_prices.length > 0) {
+            html += '<h3 style="color: var(--text-primary); margin-bottom: 15px; transition: color 0.3s ease;">Sales Prices Breakdown</h3>';
+            html += '<p style="margin: 0 0 10px 0; font-size: 13px; color: var(--text-secondary);">Click a row to show only those sale lines in Movement Details below. Click again to clear.</p>';
+            html += '<div class="table-container" style="margin-bottom: 20px;"><table><thead><tr>';
+            html += '<th class="text-right">Unit Price</th><th>Currency</th><th class="text-right">Total Quantity</th><th class="text-right">Total Amount</th>';
+            html += '</tr></thead><tbody>';
+            breakdown.sales_prices.forEach((price) => {
+                const sel = salesPriceBreakdownRowSelected(price, inventorySalesPriceFilter);
+                html += `<tr class="sales-price-breakdown-row${sel ? ' sales-price-breakdown-row--selected' : ''}" data-sp-unit-price="${price.unit_price}" data-sp-currency="${escapeHtmlAttr(price.currency)}" title="Filter Movement Details to this sale price">
+                    <td class="text-right">${formatCurrency(price.unit_price, price.currency)}</td>
+                    <td>${price.currency}</td>
+                    <td class="text-right">${price.total_quantity.toFixed(2)}</td>
+                    <td class="text-right">${formatCurrency(price.total_amount, price.currency)}</td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+        }
+
+        html += '</div>';
+    }
+
+    const displayMovements = filterMovementsBySalesPrice(movements, inventorySalesPriceFilter);
+    const movementDetailsEmptyMsg = inventorySalesPriceFilter
+ ? 'No movements match this filter'
+        : 'No movements found';
+    if (inventorySalesPriceFilter) {
+        const f = inventorySalesPriceFilter;
+        html += `<div class="inventory-sales-price-filter-banner">
+            Showing only sales at <strong>${formatCurrency(f.unit_price, f.currency)}</strong> (${escapeHtmlAttr(f.currency)}).
+            <button type="button" class="btn btn-secondary inventory-clear-sales-filter-btn" style="margin-left: 10px;">Show all movements</button>
+        </div>`;
+    }
+
+    html += renderMovementSummary(displayMovements);
+    html += '<h3 style="color: var(--text-primary); margin-bottom: 15px; transition: color 0.3s ease;">Movement Details</h3>';
+    html += '<div class="table-container"><table><thead><tr>';
+    html += '<th>Date</th><th>Type</th><th>Item Code</th><th>Item Name</th><th class="text-right">Quantity</th><th class="text-right">Unit Price</th><th class="text-right">Total Price</th><th>Currency</th><th>Reference</th>';
+    html += '</tr></thead><tbody>';
+    html += renderInventoryMovementDetailRowsHtml(displayMovements, movementDetailsEmptyMsg);
+    html += '</tbody></table></div>';
+    return html;
+}
+
+function refreshInventoryReportDom() {
+    if (!inventoryReportCache) return;
+    const { movements, breakdown, itemId } = inventoryReportCache;
+    const el = document.getElementById('reportContent');
+    if (el) el.innerHTML = buildInventoryReportHtml(movements, breakdown, itemId);
+}
+
 function loadInventoryReport() {
     const startDate = document.getElementById('reportStartDate').value;
     const endDate = document.getElementById('reportEndDate').value;
@@ -1404,6 +2610,8 @@ function loadInventoryReport() {
     if (endDate) url += `&end_date=${endDate}`;
     if (itemId) url += `&item_id=${itemId}`;
     
+    inventorySalesPriceFilter = null;
+
     fetch(url)
         .then(response => response.json())
         .then(data => {
@@ -1411,103 +2619,22 @@ function loadInventoryReport() {
                 document.getElementById('reportContent').innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
                 return;
             }
-            
-            let html = '';
-            
-            // If item is selected, show price breakdown
+
             if (itemId) {
-                // Fetch price breakdown
                 fetch(`/api/items/${itemId}/price-breakdown?start_date=${startDate || ''}&end_date=${endDate || ''}`)
                     .then(response => response.json())
                     .then(breakdown => {
-                        if (!breakdown.error) {
-                            html += '<div style="margin-bottom: 30px;">';
-                            
-                            // Purchase prices breakdown
-                            if (breakdown.purchase_prices && breakdown.purchase_prices.length > 0) {
-                                html += '<h3 style="color: var(--text-primary); margin-bottom: 15px; transition: color 0.3s ease;">Purchase Prices Breakdown</h3>';
-                                html += '<div class="table-container" style="margin-bottom: 20px;"><table><thead><tr>';
-                                html += '<th class="text-right">Unit Price</th><th>Currency</th><th class="text-right">Total Quantity</th><th class="text-right">Total Amount</th>';
-                                html += '</tr></thead><tbody>';
-                                
-                                breakdown.purchase_prices.forEach((price, index) => {
-                                    html += `<tr>
-                                        <td class="text-right">${formatCurrency(price.unit_price, price.currency)}</td>
-                                        <td>${price.currency}</td>
-                                        <td class="text-right">${price.total_quantity.toFixed(2)}</td>
-                                        <td class="text-right">${formatCurrency(price.total_amount, price.currency)}</td>
-                                    </tr>`;
-                                });
-                                
-                                html += '</tbody></table></div>';
-                            }
-                            
-                            // Sales prices breakdown
-                            if (breakdown.sales_prices && breakdown.sales_prices.length > 0) {
-                                html += '<h3 style="color: var(--text-primary); margin-bottom: 15px; transition: color 0.3s ease;">Sales Prices Breakdown</h3>';
-                                html += '<div class="table-container" style="margin-bottom: 20px;"><table><thead><tr>';
-                                html += '<th class="text-right">Unit Price</th><th>Currency</th><th class="text-right">Total Quantity</th><th class="text-right">Total Amount</th>';
-                                html += '</tr></thead><tbody>';
-                                
-                                breakdown.sales_prices.forEach((price, index) => {
-                                    html += `<tr>
-                                        <td class="text-right">${formatCurrency(price.unit_price, price.currency)}</td>
-                                        <td>${price.currency}</td>
-                                        <td class="text-right">${price.total_quantity.toFixed(2)}</td>
-                                        <td class="text-right">${formatCurrency(price.total_amount, price.currency)}</td>
-                                    </tr>`;
-                                });
-                                
-                                html += '</tbody></table></div>';
-                            }
-                            
-                            html += '</div>';
-                        }
-                        
-                        // Show movement details table
-                        html += renderMovementSummary(data);
-                        html += '<h3 style="color: var(--text-primary); margin-bottom: 15px; transition: color 0.3s ease;">Movement Details</h3>';
-                        html += '<div class="table-container"><table><thead><tr>';
-                        html += '<th>Date</th><th>Type</th><th>Item Code</th><th>Item Name</th><th class="text-right">Quantity</th><th class="text-right">Unit Price</th><th class="text-right">Total Price</th><th>Currency</th><th>Reference</th>';
-                        html += '</tr></thead><tbody>';
-                        
-                        if (data.length === 0) {
-                            html += '<tr><td colspan="9" class="empty-state">No movements found</td></tr>';
-                        } else {
-                            data.forEach((movement, index) => {
-                                let referenceLink = '';
-                                if (movement.type === 'Purchase' && movement.container_id) {
-                                    referenceLink = `<a href="/purchases?container_id=${movement.container_id}" style="color: #1e3a5f; text-decoration: underline; cursor: pointer;" title="View Purchase Container">${movement.container_number || 'N/A'}</a>`;
-                                } else if (movement.type === 'Sale' && movement.sale_id) {
-                                    referenceLink = `<a href="/sales?sale_id=${movement.sale_id}" style="color: #1e3a5f; text-decoration: underline; cursor: pointer;" title="View Sale Invoice">${movement.invoice_number || 'N/A'}</a>`;
-                                } else {
-                                    referenceLink = movement.container_number || movement.invoice_number || 'N/A';
-                                }
-                                
-                                html += `<tr>
-                                    <td>${movement.date}</td>
-                                    <td><span class="badge badge-${movement.type.toLowerCase()}">${movement.type}</span></td>
-                                    <td>${movement.item_code}</td>
-                                    <td>${movement.item_name}</td>
-                                    <td class="text-right">${movement.quantity}</td>
-                                    <td class="text-right">${formatCurrency(movement.unit_price, movement.currency)}</td>
-                                    <td class="text-right">${formatCurrency(movement.total_price, movement.currency)}</td>
-                                    <td>${movement.currency}</td>
-                                    <td>${referenceLink}</td>
-                                </tr>`;
-                            });
-                        }
-                        
-                        html += '</tbody></table></div>';
-                        document.getElementById('reportContent').innerHTML = html;
+                        const bc = breakdown && !breakdown.error ? breakdown : null;
+                        inventoryReportCache = { movements: data, breakdown: bc, itemId };
+                        document.getElementById('reportContent').innerHTML = buildInventoryReportHtml(data, bc, itemId);
                     })
                     .catch(error => {
                         console.error('Error loading price breakdown:', error);
-                        // Still show movement details even if breakdown fails
-                        renderMovementTable(data);
+                        inventoryReportCache = { movements: data, breakdown: null, itemId };
+                        document.getElementById('reportContent').innerHTML = buildInventoryReportHtml(data, null, itemId);
                     });
             } else {
-                // No item selected, just show movement table
+                inventoryReportCache = null;
                 renderMovementTable(data);
             }
         })
@@ -1556,6 +2683,7 @@ function showInventoryStockReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventoryStockFilters').style.display = 'block';
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'none';
@@ -1585,6 +2713,45 @@ function showInventoryStockReport() {
     loadInventoryStockReport();
 }
 
+function showInventoryStockAtCostReport() {
+    currentReportType = 'inventory-stock-at-cost';
+    const pdfBtn = document.getElementById('exportPDFBtn');
+    if (pdfBtn) pdfBtn.style.display = 'none';
+    document.getElementById('reportTitle').textContent = 'Inventory Stock at Cost Report';
+    document.getElementById('reportFilters').style.display = 'none';
+    document.getElementById('containerReportFilters').style.display = 'none';
+    document.getElementById('safeReportTypeFilter').style.display = 'none';
+    document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
+    document.getElementById('inventoryItemFilter').style.display = 'none';
+    document.getElementById('profitLossItemFilter').style.display = 'none';
+    hideInventoryStockRelatedFilters();
+    document.getElementById('inventoryStockAtCostFilters').style.display = 'block';
+    document.getElementById('inventorySnapshotFilters').style.display = 'none';
+    document.getElementById('itemStatementFilters').style.display = 'none';
+    document.getElementById('stockValueDetailsFilters').style.display = 'none';
+    document.getElementById('reportArea').style.display = 'block';
+
+    fetch('/api/companies?category=Supplier')
+        .then(response => response.json())
+        .then(suppliers => {
+            const select = document.getElementById('inventoryStockAtCostSupplier');
+            if (select) {
+                select.innerHTML = '<option value="">All Suppliers</option>';
+                suppliers.forEach(s => {
+                    const option = document.createElement('option');
+                    option.value = s.id;
+                    option.textContent = s.name;
+                    select.appendChild(option);
+                });
+            }
+        })
+        .catch(error => {
+            console.error('Error loading suppliers:', error);
+        });
+
+    loadInventoryStockAtCostReport();
+}
+
 function showInventorySnapshotReport() {
     currentReportType = 'inventory-snapshot';
     // Hide PDF export button for non-container reports
@@ -1597,7 +2764,7 @@ function showInventorySnapshotReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'block';
     document.getElementById('itemStatementFilters').style.display = 'none';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -1605,6 +2772,7 @@ function showInventorySnapshotReport() {
     document.getElementById('averageSalePriceFilters').style.display = 'none';
     document.getElementById('averageLastNSalesFilters').style.display = 'none';
     document.getElementById('lastPurchasePriceFilters').style.display = 'none';
+    document.getElementById('lastPurchaseCogFilters').style.display = 'none';
     document.getElementById('reportArea').style.display = 'block';
     
     // Default snapshot date to today
@@ -1631,7 +2799,7 @@ function showItemStatementReport() {
     document.getElementById('inventoryMovementTypeFilter').style.display = 'none';
     document.getElementById('inventoryItemFilter').style.display = 'none';
     document.getElementById('profitLossItemFilter').style.display = 'none';
-    document.getElementById('inventoryStockFilters').style.display = 'none';
+    hideInventoryStockRelatedFilters();
     document.getElementById('inventorySnapshotFilters').style.display = 'none';
     document.getElementById('itemStatementFilters').style.display = 'block';
     document.getElementById('stockValueDetailsFilters').style.display = 'none';
@@ -1760,6 +2928,120 @@ function clearInventoryStockFilters() {
     const select = document.getElementById('inventoryStockSupplier');
     if (select) select.value = '';
     loadInventoryStockReport();
+}
+
+function loadInventoryStockAtCostReport() {
+    const supplierId = document.getElementById('inventoryStockAtCostSupplier')?.value || '';
+
+    let url = '/api/reports/inventory-stock-at-cost';
+    if (supplierId) url += `?supplier_id=${supplierId}`;
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('reportContent').innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                return;
+            }
+
+            let filterHtml = '';
+            if (!document.getElementById('inventoryStockAtCostSupplier')) {
+                filterHtml = `
+                    <div class="filters" style="margin-bottom: 20px;">
+                        <div class="filters-row">
+                            <div class="form-group">
+                                <label>Supplier</label>
+                                <select id="inventoryStockAtCostSupplier" class="form-control" onchange="loadInventoryStockAtCostReport()">
+                                    <option value="">All Suppliers</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <button class="btn btn-secondary" onclick="clearInventoryStockAtCostFilters()">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                fetch('/api/companies?category=Supplier')
+                    .then(r => r.json())
+                    .then(suppliers => {
+                        const select = document.getElementById('inventoryStockAtCostSupplier');
+                        if (select) {
+                            suppliers.forEach(s => {
+                                const option = document.createElement('option');
+                                option.value = s.id;
+                                option.textContent = s.name;
+                                if (supplierId && String(s.id) === String(supplierId)) option.selected = true;
+                                select.appendChild(option);
+                            });
+                        }
+                    });
+            }
+
+            let html = filterHtml;
+            html += `<p style="margin-bottom: 12px; font-size: 13px; color: var(--text-secondary);">Avg unit total cost is the quantity-weighted average of (purchase unit price + allocated container COG), same rules as Stock Value Details. Stock at landed cost = available quantity × that average. Mixed purchase currencies are combined like average purchase on Inventory Stock.</p>`;
+            html += `<div style="margin-bottom: 15px; padding: 10px; background: var(--bg-tertiary); border-radius: 4px; color: var(--text-primary); transition: background-color 0.3s ease, color 0.3s ease;">
+                <strong>Total Items:</strong> ${data.total_items} | 
+                <strong>Total Quantity:</strong> ${data.total_quantity.toFixed(2)} | 
+                <strong>Total Weight:</strong> ${data.total_weight.toFixed(2)} |
+                <strong>Total Stock at Landed Cost:</strong> ${(data.total_stock_at_landed_cost != null ? data.total_stock_at_landed_cost : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>`;
+            html += '<div class="table-container"><table><thead><tr>';
+            html += '<th>Item Code</th><th>Item Name</th><th>Supplier</th><th>Grade</th><th>Category 1</th><th>Category 2</th>';
+            html += '<th class="text-right">Unit Weight</th><th class="text-right">Total Purchases</th><th class="text-right">Total Sales</th><th class="text-right">Available Quantity</th><th class="text-right">Total Weight</th>';
+            html += '<th class="text-right">Avg Unit Total Cost</th><th class="text-right">Stock at Landed Cost</th><th class="text-right">Avg Sales Price</th>';
+            html += '</tr></thead><tbody>';
+
+            if (!data.items || data.items.length === 0) {
+                html += '<tr><td colspan="14" class="empty-state">No items found</td></tr>';
+            } else {
+                data.items.forEach((item) => {
+                    const avgUC = item.avg_unit_total_cost || 0;
+                    const stockL = item.stock_at_landed_cost != null ? item.stock_at_landed_cost : 0;
+                    const avgSalesPrice = item.avg_sales_price || 0;
+                    html += `<tr>
+                        <td>${item.code}</td>
+                        <td>${item.name}</td>
+                        <td>${item.supplier_name || '-'}</td>
+                        <td>${item.grade || '-'}</td>
+                        <td>${item.category1 || '-'}</td>
+                        <td>${item.category2 || '-'}</td>
+                        <td class="text-right">${item.weight.toFixed(2)}</td>
+                        <td class="text-right">${item.total_purchases.toFixed(2)}</td>
+                        <td class="text-right">${item.total_sales.toFixed(2)}</td>
+                        <td class="text-right"><strong>${item.available_quantity.toFixed(2)}</strong></td>
+                        <td class="text-right">${item.total_weight.toFixed(2)}</td>
+                        <td class="text-right">${(item.total_purchases || 0) <= 0 ? '-' : parseFloat(avgUC).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</td>
+                        <td class="text-right">${(item.available_quantity || 0) === 0 ? '-' : parseFloat(stockL).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td class="text-right">${avgSalesPrice > 0 ? parseFloat(avgSalesPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</td>
+                    </tr>`;
+                });
+
+                const totalLanded = data.total_stock_at_landed_cost != null ? data.total_stock_at_landed_cost : data.items.reduce((sum, i) => sum + (i.stock_at_landed_cost || 0), 0);
+                html += `<tr class="total-row">
+                    <td colspan="7"><strong>TOTAL</strong></td>
+                    <td class="text-right"><strong>${data.items.reduce((sum, i) => sum + i.total_purchases, 0).toFixed(2)}</strong></td>
+                    <td class="text-right"><strong>${data.items.reduce((sum, i) => sum + i.total_sales, 0).toFixed(2)}</strong></td>
+                    <td class="text-right"><strong>${data.total_quantity.toFixed(2)}</strong></td>
+                    <td class="text-right"><strong>${data.total_weight.toFixed(2)}</strong></td>
+                    <td class="text-right">-</td>
+                    <td class="text-right"><strong>${Number(totalLanded).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td>
+                    <td class="text-right">-</td>
+                </tr>`;
+            }
+
+            html += '</tbody></table></div>';
+            document.getElementById('reportContent').innerHTML = html;
+        })
+        .catch(error => {
+            console.error('Error loading inventory stock at cost report:', error);
+            document.getElementById('reportContent').innerHTML = '<p style="color: red;">Error loading report</p>';
+        });
+}
+
+function clearInventoryStockAtCostFilters() {
+    const select = document.getElementById('inventoryStockAtCostSupplier');
+    if (select) select.value = '';
+    loadInventoryStockAtCostReport();
 }
 
 function loadSuppliersForInventorySnapshot() {
@@ -2148,11 +3430,12 @@ function loadCollectedMoneyReport() {
     const startDate = document.getElementById('reportStartDate').value;
     const endDate = document.getElementById('reportEndDate').value;
     const groupBy = 'date'; // Can be enhanced to add group_by filter
+    const customerType = document.getElementById('collectedMoneyCustomerType')?.value || 'both';
     
     let url = '/api/safe/collected-money-report?';
     if (startDate) url += `start_date=${startDate}&`;
     if (endDate) url += `end_date=${endDate}&`;
-    url += `group_by=${groupBy}`;
+    url += `group_by=${groupBy}&customer_type=${customerType}`;
     
     fetch(url)
         .then(response => response.json())
@@ -2174,6 +3457,10 @@ function loadCollectedMoneyReport() {
                         <label>Total Collected</label>
                         <div class="value" style="color: #4caf50; font-size: 24px;">${formatCurrency(data.total_collected)}</div>
                     </div>
+                    <div class="report-summary-item" style="border: 2px solid #1565c0;">
+                        <label>≈ USD Total</label>
+                        <div class="value" style="color: #1565c0; font-size: 24px;">${data.total_usd_amount != null ? formatCurrency(data.total_usd_amount, 'USD') : '-'}</div>
+                    </div>
                 </div>
             </div>`;
             
@@ -2185,8 +3472,7 @@ function loadCollectedMoneyReport() {
                 // Grouped by date
                 data.data.forEach(group => {
                     html += `<tr style="background-color: #f0f0f0; font-weight: 600;" class="group-header-row">
-                        <td data-column="date" colspan="1">${group.date} - Total</td>
-                        <td data-column="source_type" colspan="4"></td>
+                        <td data-column="date" colspan="5">${group.date} - Total</td>
                         <td class="text-right" data-column="amount" style="font-weight: 600;">${formatCurrency(group.total)}</td>
                     </tr>`;
                     group.items.forEach(item => {
@@ -2204,8 +3490,7 @@ function loadCollectedMoneyReport() {
                 // Grouped by customer
                 data.data.forEach(group => {
                     html += `<tr style="background-color: #f0f0f0; font-weight: 600;" class="group-header-row">
-                        <td data-column="date" colspan="1">${group.customer_name} - Total</td>
-                        <td data-column="source_type" colspan="4"></td>
+                        <td data-column="date" colspan="5">${group.customer_name} - Total</td>
                         <td class="text-right" data-column="amount" style="font-weight: 600;">${formatCurrency(group.total)}</td>
                     </tr>`;
                     group.items.forEach(item => {
@@ -2372,7 +3657,14 @@ function loadSafeOutReport() {
             </div>`;
 
             html += '<div class="report-table-wrapper" id="safeOutTable"><table><thead><tr>';
-            html += '<th>Date<span class="resizer"></span></th><th>Type<span class="resizer"></span></th><th>Description<span class="resizer"></span></th><th>Category<span class="resizer"></span></th><th>Invoice<span class="resizer"></span></th><th class="text-right">Amount<span class="resizer"></span></th><th class="text-right">Amount (Base)<span class="resizer"></span></th><th>Notes<span class="resizer"></span></th>';
+            html += '<th data-column="date">Date<span class="resizer"></span></th>';
+            html += '<th data-column="type">Type<span class="resizer"></span></th>';
+            html += '<th data-column="description">Description<span class="resizer"></span></th>';
+            html += '<th data-column="category">Category<span class="resizer"></span></th>';
+            html += '<th data-column="invoice">Invoice<span class="resizer"></span></th>';
+            html += '<th class="text-right" data-column="amount">Amount<span class="resizer"></span></th>';
+            html += '<th class="text-right" data-column="amount_base">Amount (Base)<span class="resizer"></span></th>';
+            html += '<th data-column="notes">Notes<span class="resizer"></span></th>';
             html += '</tr></thead><tbody>';
 
             const transactions = data.transactions || [];
@@ -2381,14 +3673,14 @@ function loadSafeOutReport() {
             } else {
                 transactions.forEach(txn => {
                     html += `<tr>
-                        <td>${txn.date}</td>
-                        <td><span class="badge badge-${txn.type.toLowerCase()}">${txn.type}</span></td>
-                        <td>${escapeHtml(txn.description)}</td>
-                        <td>${escapeHtml(txn.category)}</td>
-                        <td>${txn.invoice_number || '-'}</td>
-                        <td class="text-right">${formatCurrency(txn.amount)} ${txn.currency || ''}</td>
-                        <td class="text-right" style="color: #f44336; font-weight: 600;">${formatCurrency(txn.amount_base_currency)}</td>
-                        <td>${escapeHtml(txn.notes || '-')}</td>
+                        <td data-column="date">${txn.date}</td>
+                        <td data-column="type"><span class="badge badge-${txn.type.toLowerCase()}">${txn.type}</span></td>
+                        <td data-column="description">${escapeHtml(txn.description)}</td>
+                        <td data-column="category">${escapeHtml(txn.category)}</td>
+                        <td data-column="invoice">${txn.invoice_number || '-'}</td>
+                        <td class="text-right" data-column="amount">${formatCurrency(txn.amount)} ${txn.currency || ''}</td>
+                        <td class="text-right" data-column="amount_base" style="color: #f44336; font-weight: 600;">${formatCurrency(txn.amount_base_currency)}</td>
+                        <td data-column="notes">${escapeHtml(txn.notes || '-')}</td>
                     </tr>`;
                 });
             }
@@ -2399,6 +3691,7 @@ function loadSafeOutReport() {
 
             setTimeout(() => {
                 initializeReportColumnResizing('safeOutTable');
+                applySavedSafeOutColumnVisibility();
             }, 100);
         })
         .catch(error => {
@@ -3425,51 +4718,64 @@ function loadItemStatementReport() {
     url += `transaction_type=${transactionType}`;
     
     fetch(url)
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                content.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+        .then(response => response.json().then(data => ({ ok: response.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok || data.error) {
+                content.innerHTML = `<p style="color: red;">Error: ${data.error || 'Failed to load report'}</p>`;
                 return;
             }
             
             const startDateDisplay = startDate ? new Date(startDate).toLocaleDateString() : 'All';
             const endDateDisplay = endDate ? new Date(endDate).toLocaleDateString() : 'All';
             const supplierName = data.supplier_name ? ` - ${data.supplier_name}` : '';
+            const itemLabel = data.item ? ` — ${data.item.code} ${data.item.name}` : '';
+            const fmtQty = (v) => parseFloat(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             
-            let html = generateReportHeader('Item Statement Report' + supplierName, {
+            let html = generateReportHeader('Item Statement Report' + supplierName + itemLabel, {
                 startDate: startDateDisplay,
                 endDate: endDateDisplay
             });
             
-            // Summary
+            const summary = data.summary || {};
             html += `<div class="report-summary" style="margin-bottom: 20px;">
-                <h3>Summary</h3>
+                <h3>Stock Summary (Qty)</h3>
                 <div class="report-summary-grid">
+                    <div class="report-summary-item" style="background: #fff8e1; border-color: #ffc107;">
+                        <label style="color: #f57f17;">Opening Stock</label>
+                        <div class="value" style="color: #f57f17; font-size: 20px;">${fmtQty(summary.opening_quantity)}</div>
+                        <small style="color: #666;">Before ${startDateDisplay}</small>
+                    </div>
                     <div class="report-summary-item" style="background: #e8f5e9; border-color: #4caf50;">
                         <label style="color: #2e7d32;">Total IN</label>
-                        <div class="value" style="color: #2e7d32;">${formatCurrency(data.summary.total_in)}</div>
+                        <div class="value" style="color: #2e7d32; font-size: 20px;">${fmtQty(summary.total_in)}</div>
                     </div>
                     <div class="report-summary-item" style="background: #ffebee; border-color: #f44336;">
                         <label style="color: #c62828;">Total OUT</label>
-                        <div class="value" style="color: #c62828;">${formatCurrency(data.summary.total_out)}</div>
+                        <div class="value" style="color: #c62828; font-size: 20px;">${fmtQty(summary.total_out)}</div>
                     </div>
                     <div class="report-summary-item" style="background: #e3f2fd; border-color: #2196f3;">
                         <label style="color: #1976d2;">Net Change</label>
-                        <div class="value" style="color: #1976d2;">${formatCurrency(data.summary.net_change)}</div>
+                        <div class="value" style="color: #1976d2; font-size: 20px;">${fmtQty(summary.net_change)}</div>
+                    </div>
+                    <div class="report-summary-item" style="background: #e8eaf6; border-color: #3f51b5;">
+                        <label style="color: #283593;">Closing Stock</label>
+                        <div class="value" style="color: #283593; font-size: 20px; font-weight: 700;">${fmtQty(summary.closing_quantity)}</div>
+                        <small style="color: #666;">As of ${endDateDisplay}</small>
                     </div>
                 </div>
             </div>`;
             
-            // Transactions grouped by date
+            // Transactions
             if (!data.statement || data.statement.length === 0) {
                 html += '<p style="color: var(--text-secondary); padding: 20px; text-align: center;">No transactions found for the selected filters.</p>';
             } else {
                 html += '<div class="table-container"><table><thead><tr>';
-                html += '<th>Date</th><th>Type</th><th>Item Code</th><th>Item Name</th>';
-                html += '<th class="text-right">Quantity</th><th class="text-right">Unit Price</th><th class="text-right">Total Amount</th><th>Currency</th><th>Reference</th>';
+                html += '<th>Date</th><th>Type</th><th>Movement</th><th>Item Code</th><th>Item Name</th>';
+                html += '<th class="text-right">Quantity</th><th class="text-right">Balance After</th>';
+                html += '<th class="text-right">Unit Price</th><th class="text-right">Total Amount</th><th>Currency</th><th>Reference</th>';
                 html += '</tr></thead><tbody>';
                 
-                data.statement.forEach((transaction, index) => {
+                data.statement.forEach((transaction) => {
                     const txType = transaction.transaction_type || transaction.type || 'IN';
                     const typeColor = txType === 'IN' ? '#4caf50' : '#f44336';
                     const typeBg = txType === 'IN' ? '#e8f5e9' : '#ffebee';
@@ -3477,11 +4783,13 @@ function loadItemStatementReport() {
                     html += `<tr>
                         <td>${new Date(transaction.date).toLocaleDateString()}</td>
                         <td><span style="background: ${typeBg}; color: ${typeColor}; padding: 4px 8px; border-radius: 4px; font-weight: 600;">${txType}</span></td>
+                        <td>${transaction.movement_kind || '-'}</td>
                         <td>${transaction.item_code || '-'}</td>
                         <td>${transaction.item_name || '-'}</td>
-                        <td class="text-right">${parseFloat(transaction.quantity).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
-                        <td class="text-right">${formatCurrency(transaction.unit_price, transaction.currency)}</td>
-                        <td class="text-right" style="font-weight: 600;">${formatCurrency(transaction.total_amount, transaction.currency)}</td>
+                        <td class="text-right">${fmtQty(transaction.quantity)}</td>
+                        <td class="text-right" style="font-weight: 600;">${fmtQty(transaction.balance_after)}</td>
+                        <td class="text-right">${transaction.unit_price ? formatCurrency(transaction.unit_price, transaction.currency) : '-'}</td>
+                        <td class="text-right" style="font-weight: 600;">${transaction.total_amount ? formatCurrency(transaction.total_amount, transaction.currency) : '-'}</td>
                         <td>${transaction.currency || '-'}</td>
                         <td>${transaction.reference || '-'}</td>
                     </tr>`;
@@ -3718,6 +5026,38 @@ function loadSavedCollectedMoneyColumnVisibility() {
     }
 }
 
+function updateCollectedMoneyGroupHeaderColspans(visibility) {
+    const table = document.getElementById('collectedMoneyTable');
+    if (!table) return;
+
+    const allHeaders = table.querySelectorAll('thead th[data-column]');
+    let totalVisible = 0;
+    let amountVisible = true;
+
+    allHeaders.forEach(th => {
+        const col = th.getAttribute('data-column');
+        const isVisible = visibility
+            ? (!visibility.hasOwnProperty(col) || visibility[col] !== false)
+            : th.style.display !== 'none';
+        if (isVisible) {
+            totalVisible++;
+            if (col === 'amount') {
+                amountVisible = true;
+            }
+        } else if (col === 'amount') {
+            amountVisible = false;
+        }
+    });
+
+    const labelColspan = amountVisible ? Math.max(1, totalVisible - 1) : totalVisible;
+    table.querySelectorAll('tr.group-header-row').forEach(row => {
+        const firstCell = row.querySelector('td[data-column]');
+        if (firstCell) {
+            firstCell.setAttribute('colspan', labelColspan);
+        }
+    });
+}
+
 function applySavedCollectedMoneyColumnVisibility() {
     const saved = localStorage.getItem('collectedMoneyColumnVisibility');
     if (saved) {
@@ -3748,48 +5088,7 @@ function applySavedCollectedMoneyColumnVisibility() {
                 }
             });
             
-            // Handle group header rows (they use colspan)
-            const groupHeaders = table.querySelectorAll('tr.group-header-row');
-            groupHeaders.forEach(row => {
-                const cells = row.querySelectorAll('td[data-column], th[data-column]');
-                let visibleBeforeLast = 0;
-                let lastCellVisible = false;
-                
-                cells.forEach((cell, index) => {
-                    const column = cell.getAttribute('data-column');
-                    const isVisible = !visibility.hasOwnProperty(column) || visibility[column] !== false;
-                    
-                    if (index === 0) {
-                        // First cell - count visible columns before it
-                        visibleBeforeLast = 0;
-                    } else if (index === cells.length - 1) {
-                        // Last cell (amount column)
-                        lastCellVisible = isVisible;
-                    } else {
-                        // Middle cells
-                        if (isVisible) {
-                            visibleBeforeLast++;
-                        }
-                    }
-                });
-                
-                // Adjust colspan for first cell in group header
-                const firstCell = cells[0];
-                if (firstCell) {
-                    // Count total visible columns
-                    let totalVisible = 0;
-                    const allHeaders = table.querySelectorAll('thead th[data-column]');
-                    allHeaders.forEach(th => {
-                        const col = th.getAttribute('data-column');
-                        if (!visibility.hasOwnProperty(col) || visibility[col] !== false) {
-                            totalVisible++;
-                        }
-                    });
-                    // First cell spans all columns except the last one (amount)
-                    const firstCellColspan = lastCellVisible ? totalVisible - 1 : totalVisible;
-                    firstCell.setAttribute('colspan', firstCellColspan);
-                }
-            });
+            updateCollectedMoneyGroupHeaderColspans(visibility);
         } catch (e) {
             console.error('Error applying saved column visibility:', e);
         }
@@ -3807,6 +5106,239 @@ function applyCollectedMoneyColumnVisibility() {
     // Apply visibility to current table
     applySavedCollectedMoneyColumnVisibility();
     updateCollectedMoneyColumnSelectorBadge();
+}
+
+// Profit & Loss Report Column Visibility Functions
+function toggleProfitLossColumnSelector() {
+    const dropdown = document.getElementById('profitLossColumnSelectorDropdown');
+    if (dropdown) {
+        const isVisible = dropdown.style.display === 'block';
+        dropdown.style.display = isVisible ? 'none' : 'block';
+
+        if (!isVisible) {
+            loadSavedProfitLossColumnVisibility();
+            updateProfitLossColumnSelectorBadge();
+            setTimeout(() => {
+                document.addEventListener('click', closeProfitLossColumnSelectorOutside, true);
+            }, 0);
+        } else {
+            document.removeEventListener('click', closeProfitLossColumnSelectorOutside, true);
+        }
+    }
+}
+
+function closeProfitLossColumnSelectorOutside(event) {
+    const dropdown = document.getElementById('profitLossColumnSelectorDropdown');
+    const button = event.target.closest('button[onclick*="toggleProfitLossColumnSelector"]');
+
+    if (dropdown && !dropdown.contains(event.target) && !button) {
+        dropdown.style.display = 'none';
+        document.removeEventListener('click', closeProfitLossColumnSelectorOutside, true);
+    }
+}
+
+function selectAllProfitLossColumns() {
+    document.querySelectorAll('.profit-loss-column-checkbox').forEach(cb => { cb.checked = true; });
+    updateProfitLossColumnSelectorBadge();
+}
+
+function deselectAllProfitLossColumns() {
+    document.querySelectorAll('.profit-loss-column-checkbox').forEach(cb => { cb.checked = false; });
+    updateProfitLossColumnSelectorBadge();
+}
+
+function updateProfitLossColumnSelectorBadge() {
+    const checkboxes = document.querySelectorAll('.profit-loss-column-checkbox');
+    const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+    const totalCount = checkboxes.length;
+    const badge = document.getElementById('profitLossColumnSelectorBadge');
+
+    if (badge) {
+        if (checkedCount < totalCount) {
+            badge.textContent = totalCount - checkedCount;
+            badge.style.display = 'block';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+}
+
+function saveProfitLossColumnVisibility() {
+    const visibility = {};
+    document.querySelectorAll('.profit-loss-column-checkbox').forEach(cb => {
+        visibility[cb.getAttribute('data-column')] = cb.checked;
+    });
+    localStorage.setItem('profitLossColumnVisibility', JSON.stringify(visibility));
+}
+
+function loadSavedProfitLossColumnVisibility() {
+    const saved = localStorage.getItem('profitLossColumnVisibility');
+    if (saved) {
+        try {
+            const visibility = JSON.parse(saved);
+            document.querySelectorAll('.profit-loss-column-checkbox').forEach(cb => {
+                const column = cb.getAttribute('data-column');
+                if (Object.prototype.hasOwnProperty.call(visibility, column)) {
+                    cb.checked = visibility[column] !== false;
+                }
+            });
+        } catch (e) {
+            console.error('Error loading profit loss column visibility:', e);
+        }
+    } else {
+        document.querySelectorAll('.profit-loss-column-checkbox').forEach(cb => { cb.checked = true; });
+    }
+}
+
+function applySavedProfitLossColumnVisibility() {
+    const saved = localStorage.getItem('profitLossColumnVisibility');
+    if (!saved) return;
+
+    try {
+        const visibility = JSON.parse(saved);
+        const table = document.getElementById('profitLossReportTable');
+        if (!table) return;
+
+        table.querySelectorAll('thead th[data-column]').forEach(th => {
+            const column = th.getAttribute('data-column');
+            th.style.display = (visibility.hasOwnProperty(column) && visibility[column] === false) ? 'none' : '';
+        });
+
+        table.querySelectorAll('tbody td[data-column]').forEach(cell => {
+            const column = cell.getAttribute('data-column');
+            cell.style.display = (visibility.hasOwnProperty(column) && visibility[column] === false) ? 'none' : '';
+        });
+    } catch (e) {
+        console.error('Error applying profit loss column visibility:', e);
+    }
+}
+
+function applyProfitLossColumnVisibility() {
+    saveProfitLossColumnVisibility();
+    const dropdown = document.getElementById('profitLossColumnSelectorDropdown');
+    if (dropdown) {
+        dropdown.style.display = 'none';
+    }
+    document.removeEventListener('click', closeProfitLossColumnSelectorOutside, true);
+    loadProfitLossReport();
+}
+
+// Safe Out Report Column Visibility Functions
+function toggleSafeOutColumnSelector() {
+    const dropdown = document.getElementById('safeOutColumnSelectorDropdown');
+    if (dropdown) {
+        const isVisible = dropdown.style.display === 'block';
+        dropdown.style.display = isVisible ? 'none' : 'block';
+
+        if (!isVisible) {
+            loadSavedSafeOutColumnVisibility();
+            updateSafeOutColumnSelectorBadge();
+            setTimeout(() => {
+                document.addEventListener('click', closeSafeOutColumnSelectorOutside, true);
+            }, 0);
+        } else {
+            document.removeEventListener('click', closeSafeOutColumnSelectorOutside, true);
+        }
+    }
+}
+
+function closeSafeOutColumnSelectorOutside(event) {
+    const dropdown = document.getElementById('safeOutColumnSelectorDropdown');
+    const button = event.target.closest('button[onclick*="toggleSafeOutColumnSelector"]');
+
+    if (dropdown && !dropdown.contains(event.target) && !button) {
+        dropdown.style.display = 'none';
+        document.removeEventListener('click', closeSafeOutColumnSelectorOutside, true);
+    }
+}
+
+function selectAllSafeOutColumns() {
+    document.querySelectorAll('.safe-out-column-checkbox').forEach(cb => { cb.checked = true; });
+    updateSafeOutColumnSelectorBadge();
+}
+
+function deselectAllSafeOutColumns() {
+    document.querySelectorAll('.safe-out-column-checkbox').forEach(cb => { cb.checked = false; });
+    updateSafeOutColumnSelectorBadge();
+}
+
+function updateSafeOutColumnSelectorBadge() {
+    const checkboxes = document.querySelectorAll('.safe-out-column-checkbox');
+    const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+    const totalCount = checkboxes.length;
+    const badge = document.getElementById('safeOutColumnSelectorBadge');
+
+    if (badge) {
+        if (checkedCount < totalCount) {
+            badge.textContent = totalCount - checkedCount;
+            badge.style.display = 'block';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+}
+
+function saveSafeOutColumnVisibility() {
+    const visibility = {};
+    document.querySelectorAll('.safe-out-column-checkbox').forEach(cb => {
+        visibility[cb.getAttribute('data-column')] = cb.checked;
+    });
+    localStorage.setItem('safeOutColumnVisibility', JSON.stringify(visibility));
+}
+
+function loadSavedSafeOutColumnVisibility() {
+    const saved = localStorage.getItem('safeOutColumnVisibility');
+    if (saved) {
+        try {
+            const visibility = JSON.parse(saved);
+            document.querySelectorAll('.safe-out-column-checkbox').forEach(cb => {
+                const column = cb.getAttribute('data-column');
+                if (Object.prototype.hasOwnProperty.call(visibility, column)) {
+                    cb.checked = visibility[column] !== false;
+                }
+            });
+        } catch (e) {
+            console.error('Error loading safe out column visibility:', e);
+        }
+    } else {
+        document.querySelectorAll('.safe-out-column-checkbox').forEach(cb => { cb.checked = true; });
+    }
+}
+
+function applySavedSafeOutColumnVisibility() {
+    const saved = localStorage.getItem('safeOutColumnVisibility');
+    if (!saved) return;
+
+    try {
+        const visibility = JSON.parse(saved);
+        const table = document.getElementById('safeOutTable');
+        if (!table) return;
+
+        table.querySelectorAll('thead th[data-column]').forEach(th => {
+            const column = th.getAttribute('data-column');
+            th.style.display = (visibility.hasOwnProperty(column) && visibility[column] === false) ? 'none' : '';
+        });
+
+        table.querySelectorAll('tbody td[data-column]').forEach(cell => {
+            const column = cell.getAttribute('data-column');
+            cell.style.display = (visibility.hasOwnProperty(column) && visibility[column] === false) ? 'none' : '';
+        });
+
+        updateSafeOutColumnSelectorBadge();
+    } catch (e) {
+        console.error('Error applying safe out column visibility:', e);
+    }
+}
+
+function applySafeOutColumnVisibility() {
+    saveSafeOutColumnVisibility();
+    const dropdown = document.getElementById('safeOutColumnSelectorDropdown');
+    if (dropdown) {
+        dropdown.style.display = 'none';
+    }
+    document.removeEventListener('click', closeSafeOutColumnSelectorOutside, true);
+    applySavedSafeOutColumnVisibility();
+    updateSafeOutColumnSelectorBadge();
 }
 
 function clearItemStatementFilters() {
@@ -4204,9 +5736,9 @@ function renderLastPurchasePriceReport(data) {
     html += '<table class="report-table" style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">';
     html += '<thead><tr style="background: #1e3a5f; color: white;">';
     html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item Code</th>';
-    html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item Name</th>';
     html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Supplier</th>';
     html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Last Purchase Price</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Last COG Per Unit</th>';
     html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Last Purchase Date</th>';
     html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Container</th>';
     html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Quantity</th>';
@@ -4217,9 +5749,9 @@ function renderLastPurchasePriceReport(data) {
     items.forEach((item, index) => {
         html += `<tr style="background: ${index % 2 === 0 ? '#fff' : '#f8f9fa'};">`;
         html += `<td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">${escapeHtml(item.item_code)}</td>`;
-        html += `<td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.item_name)}</td>`;
         html += `<td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.supplier_name || 'N/A')}</td>`;
         html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right; font-weight: bold; color: #1e3a5f;">${formatNumber(item.last_purchase_price)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.last_cog_per_unit ?? 0)}</td>`;
         html += `<td style="padding: 10px; border: 1px solid #ddd;">${item.last_purchase_date || '-'}</td>`;
         html += `<td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.container_number || '-')}</td>`;
         html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.quantity)}</td>`;
@@ -4531,4 +6063,296 @@ function exportLastPurchasePriceReport() {
     if (itemId) url += `item_id=${itemId}&`;
     
     window.location.href = url;
+}
+
+function loadLastPurchaseCogReport() {
+    const content = document.getElementById('reportContent');
+    content.innerHTML = '<div class="spinner"></div>';
+    
+    const supplierId = document.getElementById('lastPurchaseCogSupplier')?.value || '';
+    const itemId = document.getElementById('lastPurchaseCogItem')?.value || '';
+    
+    let url = '/api/reports/last-purchase-cog?';
+    if (supplierId) url += `supplier_id=${supplierId}&`;
+    if (itemId) url += `item_id=${itemId}&`;
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                content.innerHTML = `<p style="color: red; padding: 20px;">Error: ${data.error}</p>`;
+                return;
+            }
+            renderLastPurchaseCogReport(data);
+        })
+        .catch(error => {
+            console.error('Error loading last purchase COG report:', error);
+            content.innerHTML = '<p style="color: red; padding: 20px;">Error loading report: ' + error.message + '</p>';
+        });
+}
+
+function renderLastPurchaseCogReport(data) {
+    const content = document.getElementById('reportContent');
+    const items = data.items || [];
+    const baseCurrency = data.base_currency || '';
+    
+    if (items.length === 0) {
+        content.innerHTML = '<p style="color: var(--text-secondary); padding: 20px; text-align: center;">No items with purchases found for the selected filters.</p>';
+        return;
+    }
+    
+    let html = '<div class="report-table-wrapper">';
+    html += '<h3 style="margin-bottom: 20px; color: #1e3a5f;">Last Purchase COG</h3>';
+    html += '<p style="margin-bottom: 15px; color: #666;">COG from the most recent purchase of each item (not the average of all purchases).</p>';
+    html += `<p style="margin-bottom: 15px; color: #666;">Total Items: <strong>${items.length}</strong></p>`;
+    
+    html += '<table class="report-table" style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">';
+    html += '<thead><tr style="background: #1e3a5f; color: white;">';
+    html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item Code</th>';
+    html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Item Name</th>';
+    html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Supplier</th>';
+    html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Last Purchase Date</th>';
+    html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Container</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Available Qty</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Quantity</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Unit Price</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">COG Per Unit</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total COG</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Cost Per Unit</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total Cost</th>';
+    html += '<th style="padding: 12px; text-align: right; border: 1px solid #ddd;">Total Cost (' + baseCurrency + ')</th>';
+    html += '<th style="padding: 12px; text-align: left; border: 1px solid #ddd;">Currency</th>';
+    html += '</tr></thead><tbody>';
+    
+    items.forEach((item, index) => {
+        html += `<tr style="background: ${index % 2 === 0 ? '#fff' : '#f8f9fa'};">`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">${escapeHtml(item.item_code)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.item_name)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.supplier_name || 'N/A')}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd;">${item.last_purchase_date || '-'}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.container_number || '-')}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.available_quantity)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.quantity)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.unit_price)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right; font-weight: bold; color: #1e3a5f;">${formatNumber(item.cog_per_unit)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.total_cog)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.cost_per_unit)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.total_cost)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">${formatNumber(item.total_cost_base_currency)}</td>`;
+        html += `<td style="padding: 10px; border: 1px solid #ddd;">${escapeHtml(item.currency || '-')}</td>`;
+        html += '</tr>';
+    });
+    
+    html += '</tbody></table></div>';
+    content.innerHTML = html;
+}
+
+function clearLastPurchaseCogFilters() {
+    document.getElementById('lastPurchaseCogSupplier').value = '';
+    document.getElementById('lastPurchaseCogItem').value = '';
+    loadLastPurchaseCogReport();
+}
+
+function loadSuppliersForLastPurchaseCog() {
+    fetch('/api/companies?category=Supplier')
+        .then(response => response.json())
+        .then(suppliers => {
+            const select = document.getElementById('lastPurchaseCogSupplier');
+            if (select) {
+                select.innerHTML = '<option value="">All Suppliers</option>';
+                suppliers.forEach(supplier => {
+                    const option = document.createElement('option');
+                    option.value = supplier.id;
+                    option.textContent = supplier.name;
+                    select.appendChild(option);
+                });
+            }
+        })
+        .catch(error => console.error('Error loading suppliers:', error));
+}
+
+function loadItemsForLastPurchaseCog() {
+    fetch('/api/items/summary')
+        .then(response => response.json())
+        .then(items => {
+            const select = document.getElementById('lastPurchaseCogItem');
+            if (select) {
+                select.innerHTML = '<option value="">All Items</option>';
+                items.forEach(item => {
+                    const option = document.createElement('option');
+                    option.value = item.id;
+                    option.textContent = `${item.code} - ${item.name}`;
+                    select.appendChild(option);
+                });
+            }
+        })
+        .catch(error => console.error('Error loading items:', error));
+}
+
+function loadPartnerProfitReport() {
+    const startDate = document.getElementById('reportStartDate').value;
+    const endDate = document.getElementById('reportEndDate').value;
+    let url = '/api/reports/partner-profit-allocation?';
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('reportContent').innerHTML = `
+                    <div style="padding: 20px; max-width: 640px;">
+                        <p style="color: #c62828; font-weight: 600;">${data.error}</p>
+                        <p style="margin-top: 16px; color: var(--text-secondary);">Set partners on the Partners page so profit-share percentages total exactly 100%.</p>
+                        <a href="/partners" class="btn btn-primary" style="margin-top: 12px; display: inline-block;">Manage partners</a>
+                    </div>`;
+                return;
+            }
+
+            const bc = data.base_currency || '';
+            const fmt = (v) => formatCurrency(v, bc);
+            const startD = startDate ? new Date(startDate).toLocaleDateString() : 'All';
+            const endD = endDate ? new Date(endDate).toLocaleDateString() : 'All';
+
+            if (window.__partnerProfitCharts) {
+                window.__partnerProfitCharts.forEach((c) => {
+                    try {
+                        c.destroy();
+                    } catch (e) {
+                        /* ignore */
+                    }
+                });
+            }
+            window.__partnerProfitCharts = [];
+
+            let html = generateReportHeader('Partner Profit Allocation', { startDate: startD, endDate: endD });
+            html += `<p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 16px; max-width: 900px;">
+                ${data.disclaimer || ''}
+                <a href="/partners">Manage partners</a>
+            </p>`;
+
+            const totalDraw = data.total_partner_drawings != null ? data.total_partner_drawings : 0;
+            const afterDraw = data.operating_profit_after_drawings != null ? data.operating_profit_after_drawings : data.operating_profit;
+            html += `<div class="report-summary" style="margin-bottom: 20px;">
+                <h3>Summary (${bc})</h3>
+                <div class="report-summary-grid">
+                    <div class="report-summary-item"><label>Revenue (P&amp;L sales)</label><div class="value">${fmt(data.revenue)}</div></div>
+                    <div class="report-summary-item"><label>Purchases (period)</label><div class="value">${fmt(data.purchases_amount != null ? data.purchases_amount : data.cogs)}</div></div>
+                    <div class="report-summary-item"><label>Gross profit</label><div class="value" style="color:#1565c0;">${fmt(data.gross_profit)}</div></div>
+                    <div class="report-summary-item"><label>General expenses (base)</label><div class="value">${fmt(data.operating_expenses)}</div></div>
+                    <div class="report-summary-item"><label>Operating profit (before tax)</label><div class="value" style="font-weight:700;color:${data.operating_profit >= 0 ? '#2e7d32' : '#c62828'};">${fmt(data.operating_profit)}</div></div>
+                    <div class="report-summary-item"><label>Partner drawings (cash, period)</label><div class="value">${fmt(totalDraw)}</div></div>
+                    <div class="report-summary-item"><label>Operating profit after drawings</label><div class="value" style="font-weight:700;color:${afterDraw >= 0 ? '#2e7d32' : '#c62828'};">${fmt(afterDraw)}</div></div>
+                </div>
+            </div>`;
+
+            html += `<div class="partner-profit-charts" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; margin-bottom: 28px;">
+                <div style="background: var(--bg-secondary, #fff); padding: 16px; border-radius: 8px; border: 1px solid var(--border-color, #e0e0e0);">
+                    <h4 style="margin: 0 0 12px 0; color: #1e3a5f;">P&amp;L bridge (amounts)</h4>
+                    <div style="position: relative; height: 300px;"><canvas id="partnerProfitBarChart"></canvas></div>
+                </div>
+                <div style="background: var(--bg-secondary, #fff); padding: 16px; border-radius: 8px; border: 1px solid var(--border-color, #e0e0e0);">
+                    <h4 style="margin: 0 0 12px 0; color: #1e3a5f;">Net after drawings by partner</h4>
+                    <div style="position: relative; height: 280px;"><canvas id="partnerProfitPieChart"></canvas></div>
+                </div>
+            </div>`;
+
+            html += '<div class="table-container"><table><thead><tr><th>Partner</th><th class="text-right">Share %</th><th class="text-right">Allocated profit</th><th class="text-right">Drawings</th><th class="text-right">Net after drawings</th></tr></thead><tbody>';
+            data.partners.forEach((p) => {
+                const dw = p.drawings != null ? p.drawings : 0;
+                const net = p.net_after_drawings != null ? p.net_after_drawings : p.allocated_profit;
+                html += `<tr><td>${escapeHtml(p.name)}</td><td class="text-right">${Number(p.share_percent).toFixed(2)}%</td><td class="text-right" style="font-weight:600;">${fmt(p.allocated_profit)}</td><td class="text-right">${fmt(dw)}</td><td class="text-right" style="font-weight:700;color:${net >= 0 ? '#2e7d32' : '#c62828'};">${fmt(net)}</td></tr>`;
+            });
+            html += '</tbody></table></div>';
+            html += generateReportFooter();
+
+            document.getElementById('reportContent').innerHTML = html;
+
+            if (typeof Chart === 'undefined') {
+                return;
+            }
+
+            const barEl = document.getElementById('partnerProfitBarChart');
+            const pieEl = document.getElementById('partnerProfitPieChart');
+            if (barEl) {
+                const c1 = new Chart(barEl.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: ['Revenue', 'Purchases', 'Gen. expenses', 'Operating profit', 'Drawings', 'After drawings'],
+                        datasets: [{
+                            label: `Amount (${bc})`,
+                            data: [
+                                data.revenue,
+                                -Math.abs(data.purchases_amount != null ? data.purchases_amount : data.cogs),
+                                -Math.abs(data.operating_expenses),
+                                data.operating_profit,
+                                -Math.abs(totalDraw),
+                                afterDraw,
+                            ],
+                            backgroundColor: ['#43a047', '#e57373', '#ffb74d', '#1e88e5', '#8d6e63', '#00695c'],
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: {
+                                ticks: {
+                                    callback: (val) => (Number.isFinite(val) ? val.toLocaleString() : ''),
+                                },
+                            },
+                        },
+                    },
+                });
+                window.__partnerProfitCharts.push(c1);
+            }
+
+            if (pieEl && data.partners.length > 0) {
+                const nets = data.partners.map((p) => Number(p.net_after_drawings != null ? p.net_after_drawings : p.allocated_profit) || 0);
+                const posSum = nets.filter((n) => n > 0).reduce((a, b) => a + b, 0);
+                const pieData =
+                    posSum > 0
+                        ? nets.map((n) => Math.max(0, n))
+                        : data.partners.map((p) => Number(p.share_percent) || 0);
+                const pieLabels = data.partners.map((p) => p.name);
+                const palette = ['#1e88e5', '#43a047', '#fb8c00', '#8e24aa', '#6d4c41', '#00838f'];
+                const c2 = new Chart(pieEl.getContext('2d'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: pieLabels,
+                        datasets: [
+                            {
+                                data: pieData,
+                                backgroundColor: data.partners.map((_, i) => palette[i % palette.length]),
+                            },
+                        ],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: 'bottom' },
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => {
+                                        const i = ctx.dataIndex;
+                                        const p = data.partners[i];
+                                        const net = p.net_after_drawings != null ? p.net_after_drawings : p.allocated_profit;
+                                        const dw = p.drawings != null ? p.drawings : 0;
+                                        return `${p.name}: net ${fmt(net)} (alloc. ${fmt(p.allocated_profit)}, drawings ${fmt(dw)})`;
+                                    },
+                                },
+                            },
+                        },
+                    },
+                });
+                window.__partnerProfitCharts.push(c2);
+            }
+        })
+        .catch((err) => {
+            console.error(err);
+            document.getElementById('reportContent').innerHTML =
+                '<p style="color: red;">Error loading partner profit report</p>';
+        });
 }

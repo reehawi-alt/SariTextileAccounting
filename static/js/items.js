@@ -5,6 +5,9 @@ let suppliers = [];
 let selectedItems = new Set();
 
 document.addEventListener('DOMContentLoaded', function() {
+    loadSavedItemsColumnCheckboxState();
+    updateItemsColumnSelectorBadge();
+    applySavedItemsColumnVisibility();
     loadSuppliers();
     loadItemsSummary();
     makeSortable(document.getElementById('itemsTable'));
@@ -105,22 +108,22 @@ function renderItemsTable(items) {
         const isSelected = selectedItems.has(item.id);
         return `
         <tr onclick="viewMovement(${item.id}, '${encodeURIComponent(item.code)}', '${encodeURIComponent(item.name)}')" style="cursor: pointer;">
-            <td onclick="event.stopPropagation();">
+            <td data-column="select" onclick="event.stopPropagation();">
                 <input type="checkbox" class="item-checkbox" data-item-id="${item.id}" 
                        ${isSelected ? 'checked' : ''} 
                        onchange="toggleItemSelection(${item.id}, this.checked)">
             </td>
-            <td>${item.code}</td>
-            <td>${item.name}</td>
-            <td>${item.supplier_id ? (supplierMap[item.supplier_id] || 'N/A') : 'N/A'}</td>
-            <td>${item.weight}</td>
-            <td>${item.grade || '-'}</td>
-            <td>${item.category1 || '-'}</td>
-            <td>${item.category2 || '-'}</td>
-            <td>${(item.total_purchases || 0).toFixed(2)}</td>
-            <td>${(item.total_sales || 0).toFixed(2)}</td>
-            <td>${(item.available_quantity || 0).toFixed(2)}</td>
-            <td onclick="event.stopPropagation();">
+            <td data-column="code">${item.code}</td>
+            <td data-column="name">${item.name}</td>
+            <td data-column="supplier">${item.supplier_id ? (supplierMap[item.supplier_id] || 'N/A') : 'N/A'}</td>
+            <td data-column="weight">${item.weight}</td>
+            <td data-column="grade">${item.grade || '-'}</td>
+            <td data-column="category1">${item.category1 || '-'}</td>
+            <td data-column="category2">${item.category2 || '-'}</td>
+            <td data-column="total_purchases">${(item.total_purchases || 0).toFixed(2)}</td>
+            <td data-column="total_sales">${(item.total_sales || 0).toFixed(2)}</td>
+            <td data-column="available_quantity">${(item.available_quantity || 0).toFixed(2)}</td>
+            <td data-column="actions" onclick="event.stopPropagation();">
                 <div class="action-btns">
                     <button class="btn-icon btn-edit" onclick="editItem(${item.id})" title="Edit">✏️</button>
                     <button class="btn-icon btn-delete" onclick="deleteItem(${item.id})" title="Delete">🗑️</button>
@@ -134,11 +137,12 @@ function renderItemsTable(items) {
     updateRemoveButton();
     updateItemCounts(items.length);
     
-    // Restore sort state after table is rendered
+    // Restore sort state and column visibility after table is rendered
     setTimeout(() => {
         const table = document.getElementById('itemsTable');
         if (table) {
             restoreTableSort(table);
+            applySavedItemsColumnVisibility();
         }
     }, 150);
 }
@@ -483,4 +487,109 @@ function exportItems() {
     document.body.removeChild(link);
     
     showNotification('Export started. File will download shortly.', 'success');
+}
+
+// Items table column visibility
+function toggleItemsColumnSelector() {
+    const dropdown = document.getElementById('itemsColumnSelectorDropdown');
+    if (!dropdown) return;
+    const isVisible = dropdown.style.display === 'block';
+    dropdown.style.display = isVisible ? 'none' : 'block';
+    if (!isVisible) {
+        loadSavedItemsColumnCheckboxState();
+        updateItemsColumnSelectorBadge();
+        setTimeout(() => {
+            document.addEventListener('click', closeItemsColumnSelectorOutside, true);
+        }, 0);
+    } else {
+        document.removeEventListener('click', closeItemsColumnSelectorOutside, true);
+    }
+}
+
+function closeItemsColumnSelectorOutside(event) {
+    const dropdown = document.getElementById('itemsColumnSelectorDropdown');
+    const button = event.target.closest('button[onclick*="toggleItemsColumnSelector"]');
+    if (dropdown && !dropdown.contains(event.target) && !button) {
+        dropdown.style.display = 'none';
+        document.removeEventListener('click', closeItemsColumnSelectorOutside, true);
+    }
+}
+
+function selectAllItemsColumns() {
+    document.querySelectorAll('.items-column-checkbox').forEach((cb) => { cb.checked = true; });
+    updateItemsColumnSelectorBadge();
+}
+
+function deselectAllItemsColumns() {
+    document.querySelectorAll('.items-column-checkbox').forEach((cb) => { cb.checked = false; });
+    updateItemsColumnSelectorBadge();
+}
+
+function updateItemsColumnSelectorBadge() {
+    const checkboxes = document.querySelectorAll('.items-column-checkbox');
+    const checkedCount = Array.from(checkboxes).filter((cb) => cb.checked).length;
+    const badge = document.getElementById('itemsColumnSelectorBadge');
+    if (!badge) return;
+    if (checkedCount < checkboxes.length) {
+        badge.textContent = checkboxes.length - checkedCount;
+        badge.style.display = 'block';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+function saveItemsColumnVisibility() {
+    const visibility = {};
+    document.querySelectorAll('.items-column-checkbox').forEach((cb) => {
+        visibility[cb.getAttribute('data-column')] = cb.checked;
+    });
+    localStorage.setItem('itemsColumnVisibility', JSON.stringify(visibility));
+}
+
+function loadSavedItemsColumnCheckboxState() {
+    const saved = localStorage.getItem('itemsColumnVisibility');
+    if (!saved) {
+        document.querySelectorAll('.items-column-checkbox').forEach((cb) => { cb.checked = true; });
+        return;
+    }
+    try {
+        const visibility = JSON.parse(saved);
+        document.querySelectorAll('.items-column-checkbox').forEach((cb) => {
+            const column = cb.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column)) {
+                cb.checked = visibility[column] !== false;
+            }
+        });
+    } catch (e) {
+        console.error('Error loading items column visibility:', e);
+    }
+}
+
+function applySavedItemsColumnVisibility() {
+    const saved = localStorage.getItem('itemsColumnVisibility');
+    if (!saved) return;
+    try {
+        const visibility = JSON.parse(saved);
+        const table = document.getElementById('itemsTable');
+        if (!table) return;
+        table.querySelectorAll('thead th[data-column], tbody td[data-column]').forEach((cell) => {
+            const column = cell.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column) && visibility[column] === false) {
+                cell.style.display = 'none';
+            } else {
+                cell.style.display = '';
+            }
+        });
+    } catch (e) {
+        console.error('Error applying items column visibility:', e);
+    }
+}
+
+function applyItemsColumnVisibility() {
+    saveItemsColumnVisibility();
+    const dropdown = document.getElementById('itemsColumnSelectorDropdown');
+    if (dropdown) dropdown.style.display = 'none';
+    document.removeEventListener('click', closeItemsColumnSelectorOutside, true);
+    applySavedItemsColumnVisibility();
+    updateItemsColumnSelectorBadge();
 }

@@ -43,6 +43,60 @@
             <label>Selected Items</label>
             <div id="selectedItemsCount" style="font-weight: 700; font-size: 16px;">0</div>
         </div>
+        <div class="form-group" id="itemsColumnSelector" style="position: relative; margin-left: auto;">
+            <button type="button" class="btn btn-secondary" onclick="toggleItemsColumnSelector()" style="position: relative;">
+                Columns
+                <span id="itemsColumnSelectorBadge" style="display: none; position: absolute; top: -5px; right: -5px; background: #f44336; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 18px; text-align: center;"></span>
+            </button>
+            <div id="itemsColumnSelectorDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 5px; background: white; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 1000; min-width: 220px; padding: 10px;">
+                <div style="font-weight: 600; margin-bottom: 8px; color: #1e3a5f;">Show columns</div>
+                <div id="itemsColumnCheckboxes" style="max-height: 320px; overflow-y: auto;">
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="select" checked> Select
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="code" checked> Code
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="name" checked> Name
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="supplier" checked> Supplier
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="weight" checked> Weight
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="grade" checked> Grade
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="category1" checked> Category 1
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="category2" checked> Category 2
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="total_purchases" checked> Total Purchases
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="total_sales" checked> Total Sales
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="available_quantity" checked> Available Qty
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="items-column-checkbox" data-column="actions" checked> Actions
+                    </label>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 10px;">
+                    <button type="button" class="btn btn-secondary" onclick="selectAllItemsColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Select All</button>
+                    <button type="button" class="btn btn-secondary" onclick="deselectAllItemsColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Deselect All</button>
+                </div>
+                <div style="margin-top: 8px;">
+                    <button type="button" class="btn btn-primary" onclick="applyItemsColumnVisibility()" style="width: 100%; padding: 8px; font-size: 13px;">Apply</button>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -50,20 +104,20 @@
     <table id="itemsTable">
         <thead>
             <tr>
-                <th style="width: 50px;">
+                <th style="width: 50px;" data-column="select">
                     <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()" title="Select All">
                 </th>
-                <th class="sortable">Code</th>
-                <th class="sortable">Name</th>
-                <th class="sortable">Supplier</th>
-                <th class="sortable">Weight</th>
-                <th>Grade</th>
-                <th>Category 1</th>
-                <th>Category 2</th>
-                <th class="sortable">Total Purchases</th>
-                <th class="sortable">Total Sales</th>
-                <th class="sortable">Available Qty</th>
-                <th>Actions</th>
+                <th class="sortable" data-column="code">Code</th>
+                <th class="sortable" data-column="name">Name</th>
+                <th class="sortable" data-column="supplier">Supplier</th>
+                <th class="sortable" data-column="weight">Weight</th>
+                <th data-column="grade">Grade</th>
+                <th data-column="category1">Category 1</th>
+                <th data-column="category2">Category 2</th>
+                <th class="sortable" data-column="total_purchases">Total Purchases</th>
+                <th class="sortable" data-column="total_sales">Total Sales</th>
+                <th class="sortable" data-column="available_quantity">Available Qty</th>
+                <th data-column="actions">Actions</th>
             </tr>
         </thead>
         <tbody id="itemsTableBody">

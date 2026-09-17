@@ -3,12 +3,21 @@
 let categories = [];
 let marketBaseCurrency = null;
 
+function formatLocalYMD(d) {
+    return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+}
+
+function defaultExpensePeriodDates() {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 1);
+    return { start: formatLocalYMD(start), end: formatLocalYMD(end) };
+}
+
 document.addEventListener('DOMContentLoaded', function() {
-    // Set default dates (from 2020-01-01 to today)
-    const today = new Date();
-    const firstDay = new Date('2020-01-01');
-    document.getElementById('expenseStartDate').value = firstDay.toISOString().split('T')[0];
-    document.getElementById('expenseEndDate').value = today.toISOString().split('T')[0];
+    const period = defaultExpensePeriodDates();
+    document.getElementById('expenseStartDate').value = period.start;
+    document.getElementById('expenseEndDate').value = period.end;
     
     loadExpenses();
     loadCategories();
@@ -48,15 +57,56 @@ function loadMarketCurrency() {
         .catch(error => console.error('Error loading market:', error));
 }
 
+function escapeExpenseHtml(text) {
+    if (text == null || text === '') return '';
+    const d = document.createElement('div');
+    d.textContent = String(text);
+    return d.innerHTML;
+}
+
+function escapeExpenseAttr(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;');
+}
+
+function getSelectedExpenseCategories() {
+    return Array.from(document.querySelectorAll('.expense-category-filter-cb:checked')).map(cb => cb.value);
+}
+
+function renderExpenseCategoryFilter() {
+    const wrap = document.getElementById('expenseCategoryFilterWrap');
+    if (!wrap) return;
+    const selected = new Set(getSelectedExpenseCategories());
+    if (categories.length === 0) {
+        wrap.innerHTML = '<span style="color:var(--text-secondary,#666);font-size:0.9em;">No categories yet.</span>';
+        return;
+    }
+    wrap.innerHTML = categories.map(cat => {
+        const checked = selected.has(cat) ? ' checked' : '';
+        return `<label class="expense-category-chip"><input type="checkbox" class="expense-category-filter-cb expense-category-chip-input" value="${escapeExpenseAttr(cat)}"${checked}><span class="expense-category-chip-label">${escapeExpenseHtml(cat)}</span></label>`;
+    }).join('');
+}
+
+function selectAllExpenseFilterCategories() {
+    document.querySelectorAll('.expense-category-filter-cb').forEach(cb => { cb.checked = true; });
+}
+
+function clearExpenseFilterCategories() {
+    document.querySelectorAll('.expense-category-filter-cb').forEach(cb => { cb.checked = false; });
+}
+
 function loadExpenses() {
     const startDate = document.getElementById('expenseStartDate').value;
     const endDate = document.getElementById('expenseEndDate').value;
-    const category = document.getElementById('expenseCategoryFilter').value;
     
     let url = '/api/expenses?';
     if (startDate) url += `start_date=${startDate}&`;
     if (endDate) url += `end_date=${endDate}&`;
-    if (category) url += `category=${encodeURIComponent(category)}&`;
+    getSelectedExpenseCategories().forEach(cat => {
+        url += `category=${encodeURIComponent(cat)}&`;
+    });
     
     fetch(url)
         .then(response => response.json())
@@ -64,15 +114,16 @@ function loadExpenses() {
             // Handle both old format (array) and new format (object with expenses array)
             const expenses = Array.isArray(data) ? data : data.expenses;
             const total = Array.isArray(data) ? null : data.total_base_currency;
+            const totalUsd = Array.isArray(data) ? null : data.total_usd;
             const count = Array.isArray(data) ? data.length : data.count;
             
             renderExpensesTable(expenses);
-            updateExpensesTotal(total, count);
+            updateExpensesTotal(total, totalUsd, count);
         })
         .catch(error => {
             console.error('Error loading expenses:', error);
             document.getElementById('expensesTableBody').innerHTML = '<tr><td colspan="6" class="empty-state">Error loading expenses</td></tr>';
-            updateExpensesTotal(null, 0);
+            updateExpensesTotal(null, null, 0);
         });
 }
 
@@ -81,26 +132,15 @@ function loadCategories() {
         .then(response => response.json())
         .then(data => {
             categories = data;
-            const filterSelect = document.getElementById('expenseCategoryFilter');
             const formSelect = document.getElementById('expenseCategory');
-            
-            // Clear existing options (except first)
-            filterSelect.innerHTML = '<option value="">All Categories</option>';
             formSelect.innerHTML = '<option value="">Select or Type Category</option>';
-            
             data.forEach(category => {
-                // Filter dropdown
-                const filterOption = document.createElement('option');
-                filterOption.value = category;
-                filterOption.textContent = category;
-                filterSelect.appendChild(filterOption);
-                
-                // Form dropdown
                 const formOption = document.createElement('option');
                 formOption.value = category;
                 formOption.textContent = category;
                 formSelect.appendChild(formOption);
             });
+            renderExpenseCategoryFilter();
         })
         .catch(error => console.error('Error loading categories:', error));
 }
@@ -119,7 +159,7 @@ function renderExpensesTable(expenses) {
             <td>${expense.description}</td>
             <td><span class="badge badge-unpaid">${expense.category}</span></td>
             <td class="currency">${formatCurrency(expense.amount, expense.currency)}</td>
-            <td>${expense.currency}</td>
+            <td class="text-right currency" title="${expense.usd_rate_from_safe_statement ? `Safe Statement rate: ${expense.usd_rate} (base per USD)` : `No Safe Statement rate for this date; using default ${expense.usd_rate}`}">${expense.approx_usd != null ? formatCurrency(expense.approx_usd, 'USD') : '-'}</td>
             <td>
                 <div class="action-btns">
                     <button class="btn-icon btn-edit" onclick="editExpense(${expense.id})" title="Edit">✏️</button>
@@ -138,57 +178,55 @@ function renderExpensesTable(expenses) {
     }, 150);
 }
 
-function updateExpensesTotal(total, count) {
+function updateExpensesTotal(total, totalUsd, count) {
     let totalBox = document.getElementById('expensesTotalBox');
     
     // Create total box if it doesn't exist
     if (!totalBox) {
         totalBox = document.createElement('div');
         totalBox.id = 'expensesTotalBox';
-        totalBox.style.cssText = 'background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;';
+        totalBox.style.cssText = 'background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;';
         
         const tableContainer = document.querySelector('.table-container');
         if (tableContainer) {
             tableContainer.parentNode.insertBefore(totalBox, tableContainer);
         }
     }
+
+    function renderTotals(baseCurrency) {
+        const baseTotalHtml = total !== null && total !== undefined
+            ? formatCurrency(total, baseCurrency)
+            : '-';
+        const usdTotalHtml = totalUsd !== null && totalUsd !== undefined
+            ? formatCurrency(totalUsd, 'USD')
+            : '-';
+        totalBox.innerHTML = `
+            <div>
+                <strong>Total Expenses (${count} ${count === 1 ? 'expense' : 'expenses'}):</strong>
+            </div>
+            <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: center;">
+                <div style="font-size: 18px; font-weight: bold; color: #d32f2f;">
+                    ${baseTotalHtml}
+                </div>
+                <div style="font-size: 18px; font-weight: bold; color: #1565c0;">
+                    ≈USD Total: ${usdTotalHtml}
+                </div>
+            </div>
+        `;
+    }
     
     if (total !== null && total !== undefined) {
-        // Use cached currency if available, otherwise fetch
         if (marketBaseCurrency) {
-            totalBox.innerHTML = `
-                <div>
-                    <strong>Total Expenses (${count} ${count === 1 ? 'expense' : 'expenses'}):</strong>
-                </div>
-                <div style="font-size: 18px; font-weight: bold; color: #d32f2f;">
-                    ${formatCurrency(total, marketBaseCurrency)}
-                </div>
-            `;
+            renderTotals(marketBaseCurrency);
         } else {
-            // Get base currency from market
             fetch('/api/current-market')
                 .then(response => response.json())
                 .then(data => {
                     marketBaseCurrency = data.base_currency || 'USD';
-                    totalBox.innerHTML = `
-                        <div>
-                            <strong>Total Expenses (${count} ${count === 1 ? 'expense' : 'expenses'}):</strong>
-                        </div>
-                        <div style="font-size: 18px; font-weight: bold; color: #d32f2f;">
-                            ${formatCurrency(total, marketBaseCurrency)}
-                        </div>
-                    `;
+                    renderTotals(marketBaseCurrency);
                 })
                 .catch(() => {
-                    // Fallback if API fails
-                    totalBox.innerHTML = `
-                        <div>
-                            <strong>Total Expenses (${count} ${count === 1 ? 'expense' : 'expenses'}):</strong>
-                        </div>
-                        <div style="font-size: 18px; font-weight: bold; color: #d32f2f;">
-                            ${parseFloat(total).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                        </div>
-                    `;
+                    renderTotals('');
                 });
         }
     } else {
@@ -196,8 +234,9 @@ function updateExpensesTotal(total, count) {
             <div>
                 <strong>Total Expenses:</strong>
             </div>
-            <div style="font-size: 18px; font-weight: bold; color: #d32f2f;">
-                -
+            <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: center;">
+                <div style="font-size: 18px; font-weight: bold; color: #d32f2f;">-</div>
+                <div style="font-size: 18px; font-weight: bold; color: #1565c0;">≈USD Total: -</div>
             </div>
         `;
     }
@@ -330,11 +369,10 @@ function addNewCategory() {
 }
 
 function clearExpenseFilters() {
-    const today = new Date();
-    const firstDay = new Date('2020-01-01');
-    document.getElementById('expenseStartDate').value = firstDay.toISOString().split('T')[0];
-    document.getElementById('expenseEndDate').value = today.toISOString().split('T')[0];
-    document.getElementById('expenseCategoryFilter').value = '';
+    const period = defaultExpensePeriodDates();
+    document.getElementById('expenseStartDate').value = period.start;
+    document.getElementById('expenseEndDate').value = period.end;
+    clearExpenseFilterCategories();
     loadExpenses();
 }
 
@@ -350,12 +388,13 @@ function closeImportModal() {
 function exportExpenses() {
     const startDate = document.getElementById('expenseStartDate').value;
     const endDate = document.getElementById('expenseEndDate').value;
-    const category = document.getElementById('expenseCategoryFilter').value;
     
     let url = '/api/expenses/export?';
     if (startDate) url += `start_date=${startDate}&`;
     if (endDate) url += `end_date=${endDate}&`;
-    if (category) url += `category=${encodeURIComponent(category)}&`;
+    getSelectedExpenseCategories().forEach(cat => {
+        url += `category=${encodeURIComponent(cat)}&`;
+    });
     
     // Create a temporary link and trigger download
     const link = document.createElement('a');

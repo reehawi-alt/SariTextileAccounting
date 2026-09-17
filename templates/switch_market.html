@@ -54,8 +54,9 @@ function loadSwitchMarkets() {
             marketList.innerHTML = '';
             
             markets.forEach(market => {
+                const isActive = market.is_active !== false;
                 const div = document.createElement('div');
-                div.style.cssText = 'padding: 20px; margin-bottom: 15px; border: 2px solid #e0e0e0; border-radius: 8px; transition: all 0.3s; position: relative; background: white;';
+                div.style.cssText = `padding: 20px; margin-bottom: 15px; border: 2px solid ${isActive ? '#e0e0e0' : '#ccc'}; border-radius: 8px; transition: all 0.3s; position: relative; background: ${isActive ? 'white' : '#f5f5f5'}; opacity: ${isActive ? '1' : '0.85'};`;
                 
                 const contentDiv = document.createElement('div');
                 contentDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 15px; width: 100%;';
@@ -64,13 +65,30 @@ function loadSwitchMarkets() {
                 infoDiv.style.cssText = 'flex: 1; cursor: pointer;';
                 infoDiv.onclick = () => switchMarket(market.id);
                 infoDiv.innerHTML = `
-                    <div style="font-weight: 600; font-size: 18px; margin-bottom: 10px;">${market.name}</div>
+                    <div style="font-weight: 600; font-size: 18px; margin-bottom: 10px;">
+                        ${market.name}
+                        ${isActive ? '' : '<span style="margin-left: 10px; font-size: 12px; color: #999; font-weight: 600;">(Inactive)</span>'}
+                    </div>
                     <div style="font-size: 14px; color: #666; margin-bottom: 5px;">${market.address || ''}</div>
                     <div style="font-size: 12px; color: #999;">Currency: ${market.base_currency}</div>
                 `;
                 
                 const buttonsDiv = document.createElement('div');
-                buttonsDiv.style.cssText = 'display: flex; gap: 10px; flex-shrink: 0;';
+                buttonsDiv.style.cssText = 'display: flex; gap: 10px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end;';
+                
+                const toggleBtn = document.createElement('button');
+                toggleBtn.type = 'button';
+                toggleBtn.textContent = isActive ? 'DEACTIVATE' : 'ACTIVATE';
+                toggleBtn.style.cssText = `min-width: 110px; height: 36px; border: 2px solid ${isActive ? '#ff9800' : '#2e7d32'}; border-radius: 4px; background-color: ${isActive ? '#ff9800' : '#2e7d32'}; color: white; cursor: pointer; font-size: 14px; font-weight: 600; padding: 0 12px;`;
+                toggleBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); toggleMarketActive(market.id, isActive); return false; };
+                toggleBtn.title = isActive ? 'Hide from Select Market list' : 'Show in Select Market list';
+                
+                const cloneBtn = document.createElement('button');
+                cloneBtn.type = 'button';
+                cloneBtn.textContent = 'CLONE';
+                cloneBtn.style.cssText = 'min-width: 80px; height: 36px; border: 2px solid #4caf50; border-radius: 4px; background-color: #4caf50; color: white; cursor: pointer; font-size: 14px; font-weight: 600; padding: 0 12px;';
+                cloneBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); cloneMarket(market.id); return false; };
+                cloneBtn.title = 'Clone Market (copies companies and items)';
                 
                 const editBtn = document.createElement('button');
                 editBtn.type = 'button';
@@ -86,6 +104,8 @@ function loadSwitchMarkets() {
                 deleteBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); deleteMarket(market.id); return false; };
                 deleteBtn.title = 'Delete Market';
                 
+                buttonsDiv.appendChild(toggleBtn);
+                buttonsDiv.appendChild(cloneBtn);
                 buttonsDiv.appendChild(editBtn);
                 buttonsDiv.appendChild(deleteBtn);
                 
@@ -123,6 +143,34 @@ function switchMarket(marketId) {
     .catch(error => console.error('Error switching market:', error));
 }
 
+function toggleMarketActive(marketId, currentlyActive) {
+    const action = currentlyActive ? 'deactivate' : 'activate';
+    if (!confirm(`Are you sure you want to ${action} this market?`)) {
+        return;
+    }
+
+    fetch(`/api/markets/${marketId}`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ is_active: !currentlyActive })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error: ' + data.error);
+        } else {
+            loadSwitchMarkets();
+            showNotification(currentlyActive ? 'Market deactivated' : 'Market activated', 'success');
+        }
+    })
+    .catch(error => {
+        console.error('Error updating market status:', error);
+        alert('Error updating market status');
+    });
+}
+
 function editMarket(marketId) {
     fetch(`/api/markets/${marketId}`)
         .then(response => response.json())
@@ -138,6 +186,32 @@ function editMarket(marketId) {
             console.error('Error loading market:', error);
             alert('Error loading market');
         });
+}
+
+function cloneMarket(marketId) {
+    if (!confirm('Clone this market? This will copy all companies and items. Purchases, sales, payments, and other transactions will not be copied. You can rename the new market after.')) {
+        return;
+    }
+    
+    fetch(`/api/markets/${marketId}/clone`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error: ' + data.error);
+        } else {
+            loadSwitchMarkets();
+            showNotification('Market cloned successfully. Rename it using Edit.', 'success');
+        }
+    })
+    .catch(error => {
+        console.error('Error cloning market:', error);
+        alert('Error cloning market');
+    });
 }
 
 function deleteMarket(marketId) {

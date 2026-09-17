@@ -18,7 +18,12 @@ function loadCompanies() {
     fetch(url)
         .then(response => response.json())
         .then(data => {
-            renderCompaniesTable(data);
+            if (data.error) {
+                document.getElementById('companiesTableBody').innerHTML = `<tr><td colspan="7" class="empty-state">${data.error}</td></tr>`;
+                document.getElementById('totalBalancesSummary').style.display = 'none';
+                return;
+            }
+            renderCompaniesTable(Array.isArray(data) ? data : []);
         })
         .catch(error => {
             console.error('Error loading companies:', error);
@@ -34,14 +39,16 @@ function renderCompaniesTable(companies) {
         return;
     }
     
-    tbody.innerHTML = companies.map(company => `
+    tbody.innerHTML = companies.map(company => {
+        const bal = formatBalanceWithSign(company.balance || 0, company.currency, company.category || '');
+        return `
         <tr>
             <td>${company.name}</td>
             <td>${company.address || ''}</td>
             <td>${company.category}</td>
             <td>${company.payment_type || '-'}</td>
             <td>${company.currency}</td>
-            <td class="currency">${formatCurrency(company.balance, company.currency)}</td>
+            <td class="currency" style="color: ${bal.color}; font-weight: 600;">${bal.html}</td>
             <td>
                 <div class="action-btns">
                     <button class="btn-icon btn-edit" onclick="editCompany(${company.id})" title="Edit">✏️</button>
@@ -50,7 +57,8 @@ function renderCompaniesTable(companies) {
                 </div>
             </td>
         </tr>
-    `).join('');
+    `;
+    }).join('');
     
     // Calculate and display total balances by currency
     calculateTotalBalances(companies);
@@ -104,15 +112,18 @@ function calculateTotalBalances(companies) {
     `;
     
     gridDiv.innerHTML += Object.entries(balancesByCurrency)
-        .map(([currency, total]) => `
+        .map(([currency, total]) => {
+            const bal = formatBalanceWithSign(total, currency, category || '');
+            return `
             <div class="report-summary-item">
                 <label>Total Balance (${currency})</label>
-                <div class="value">${formatCurrency(total, currency)}</div>
+                <div class="value" style="color: ${bal.color}; font-weight: 600;">${bal.html}</div>
                 <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
                     ${countByCurrency[currency]} ${countByCurrency[currency] === 1 ? 'company' : 'companies'}
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
 }
 
 function openAddCompanyModal() {

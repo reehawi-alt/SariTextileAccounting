@@ -3,7 +3,7 @@ General Expenses API endpoints
 """
 from flask import Blueprint, request, jsonify, session, send_file
 from flask_login import login_required
-from models import db, GeneralExpense, SafeTransaction, Market
+from models import db, GeneralExpense, SafeTransaction, Market, SafeStatementRealBalance
 from decimal import Decimal
 from datetime import datetime
 import pandas as pd
@@ -11,6 +11,40 @@ from io import BytesIO
 from openpyxl.utils import get_column_letter
 
 bp = Blueprint('expenses', __name__)
+
+DEFAULT_USD_RATE = Decimal('0')
+
+
+def _approx_usd_amount(base_amount, usd_rate):
+    rate = float(usd_rate or 0)
+    if rate <= 0:
+        return 0.0
+    return float(base_amount) / rate
+
+
+def _get_currency_rates_for_dates(market_id, dates):
+    """Map expense date -> Safe Statement currency rate (base per USD)."""
+    if not dates:
+        return {}
+    rows = SafeStatementRealBalance.query.filter_by(market_id=market_id).filter(
+        SafeStatementRealBalance.date.in_(dates)
+    ).all()
+    return {
+        row.date.isoformat(): float(row.currency_rate) if row.currency_rate else None
+        for row in rows
+    }
+
+
+def _resolve_usd_rate(date_str, rates_map):
+    rate = rates_map.get(date_str)
+    if rate is None or rate <= 0:
+        return float(DEFAULT_USD_RATE), False
+    return float(rate), True
+
+def _requested_expense_categories():
+    """Categories from repeated ?category=A&category=B (Excel-style multi-select). Ignores blanks."""
+    cats = request.args.getlist('category')
+    return [str(c).strip() for c in cats if c is not None and str(c).strip()]
 
 @bp.route('', methods=['GET'])
 @login_required
@@ -21,12 +55,12 @@ def get_expenses():
     
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
-    category = request.args.get('category')
+    categories = _requested_expense_categories()
     
     query = GeneralExpense.query.filter_by(market_id=market_id)
     
-    if category:
-        query = query.filter_by(category=category)
+    if categories:
+        query = query.filter(GeneralExpense.category.in_(categories))
     if start_date:
         query = query.filter(GeneralExpense.date >= datetime.strptime(start_date, '%Y-%m-%d').date())
     if end_date:
@@ -34,21 +68,35 @@ def get_expenses():
     
     expenses = query.order_by(GeneralExpense.date.desc(), GeneralExpense.id.desc()).all()
     
-    # Calculate total in base currency
+    # Calculate total in base currency and approximate USD using Safe Statement rates
     total_base_currency = sum(e.amount_base_currency for e in expenses)
-    
-    return jsonify({
-        'expenses': [{
+    expense_dates = {e.date for e in expenses}
+    rates_map = _get_currency_rates_for_dates(market_id, expense_dates)
+    total_usd = Decimal('0')
+    expense_rows = []
+    for e in expenses:
+        date_str = e.date.isoformat()
+        usd_rate, from_safe_statement = _resolve_usd_rate(date_str, rates_map)
+        approx_usd = _approx_usd_amount(e.amount_base_currency, usd_rate)
+        total_usd += Decimal(str(approx_usd))
+        expense_rows.append({
             'id': e.id,
-            'date': e.date.isoformat(),
+            'date': date_str,
             'description': e.description,
             'category': e.category,
             'amount': float(e.amount),
             'currency': e.currency,
             'exchange_rate': float(e.exchange_rate),
-            'amount_base_currency': float(e.amount_base_currency)
-        } for e in expenses],
+            'amount_base_currency': float(e.amount_base_currency),
+            'approx_usd': approx_usd,
+            'usd_rate': usd_rate,
+            'usd_rate_from_safe_statement': from_safe_statement,
+        })
+    
+    return jsonify({
+        'expenses': expense_rows,
         'total_base_currency': float(total_base_currency),
+        'total_usd': float(total_usd),
         'count': len(expenses)
     })
 
@@ -351,13 +399,13 @@ def export_expenses():
     
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
-    category = request.args.get('category')
+    categories = _requested_expense_categories()
     
     # Build query (same as get_expenses)
     query = GeneralExpense.query.filter_by(market_id=market_id)
     
-    if category:
-        query = query.filter_by(category=category)
+    if categories:
+        query = query.filter(GeneralExpense.category.in_(categories))
     if start_date:
         query = query.filter(GeneralExpense.date >= datetime.strptime(start_date, '%Y-%m-%d').date())
     if end_date:

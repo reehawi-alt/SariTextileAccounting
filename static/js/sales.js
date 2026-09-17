@@ -12,21 +12,34 @@ document.addEventListener('DOMContentLoaded', function() {
     const firstDay = new Date('2020-01-01');
     document.getElementById('filterStartDate').value = firstDay.toISOString().split('T')[0];
     document.getElementById('filterEndDate').value = today.toISOString().split('T')[0];
+
+    loadSavedSalesColumnCheckboxState();
+    updateSalesColumnSelectorBadge();
+    applySavedSalesColumnVisibility();
     
     // Load data
     loadSales();
-    loadCustomers();
-    loadSuppliers();
+    const customersPromise = loadCustomers();
+    const suppliersPromise = loadSuppliers();
     makeSortable(document.getElementById('salesTable'));
     
-    // Check for sale_id in URL to open sale invoice
+    // sale_id: default = view invoice; edit=1 = open edit modal (e.g. from inventory movement report)
     const urlParams = new URLSearchParams(window.location.search);
     const saleId = urlParams.get('sale_id');
+    const openEdit = urlParams.get('edit') === '1';
     if (saleId) {
-        // Wait for sales to load, then open the invoice
-        setTimeout(() => {
-            showSaleInvoice(parseInt(saleId));
-        }, 500);
+        const sid = parseInt(saleId, 10);
+        if (openEdit) {
+            Promise.all([customersPromise, suppliersPromise]).then(() => {
+                editSale(sid);
+            }).catch(() => {
+                setTimeout(() => editSale(sid), 300);
+            });
+        } else {
+            setTimeout(() => {
+                showSaleInvoice(sid);
+            }, 500);
+        }
     }
     
     // Add event listeners to filter inputs for automatic reload
@@ -62,17 +75,29 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-function loadSales() {
+function buildSalesListQueryParams() {
     const startDate = document.getElementById('filterStartDate').value;
     const endDate = document.getElementById('filterEndDate').value;
     const customerId = document.getElementById('filterCustomer').value;
     const supplierId = document.getElementById('filterSupplier').value;
-    
-    let url = '/api/sales?';
-    if (startDate) url += `start_date=${startDate}&`;
-    if (endDate) url += `end_date=${endDate}&`;
-    if (customerId) url += `customer_id=${customerId}&`;
-    if (supplierId) url += `supplier_id=${supplierId}&`;
+    let qs = '';
+    if (startDate) qs += `start_date=${encodeURIComponent(startDate)}&`;
+    if (endDate) qs += `end_date=${encodeURIComponent(endDate)}&`;
+    if (customerId) qs += `customer_id=${encodeURIComponent(customerId)}&`;
+    if (supplierId) qs += `supplier_id=${encodeURIComponent(supplierId)}&`;
+    return qs;
+}
+
+function exportSalesToExcel() {
+    const qs = buildSalesListQueryParams();
+    window.location.href = '/api/sales/export?' + qs;
+    if (typeof showNotification === 'function') {
+        showNotification('Export started. Your download should begin shortly.', 'success');
+    }
+}
+
+function loadSales() {
+    let url = '/api/sales?' + buildSalesListQueryParams();
     
     fetch(url)
         .then(response => response.json())
@@ -81,21 +106,22 @@ function loadSales() {
             const sales = Array.isArray(data) ? data : data.sales;
             const total = Array.isArray(data) ? null : data.total_amount;
             const count = Array.isArray(data) ? data.length : data.count;
+            const totalQty = Array.isArray(data) ? null : data.total_quantity;
             
             salesData = sales;
             renderSalesTable(sales);
-            updateSalesTotal(total, count);
+            updateSalesTotal(total, count, totalQty);
         })
         .catch(error => {
             console.error('Error loading sales:', error);
             document.getElementById('salesTableBody').innerHTML = 
                 '<tr><td colspan="11" class="empty-state">Error loading sales</td></tr>';
-            updateSalesTotal(null, 0);
+            updateSalesTotal(null, 0, null);
         });
 }
 
 function loadCustomers() {
-    fetch('/api/companies?category=Customer')
+    return fetch('/api/companies?category=Customer')
         .then(response => response.json())
         .then(data => {
             customers = data;
@@ -113,12 +139,16 @@ function loadCustomers() {
                 option2.textContent = customer.name;
                 saleSelect.appendChild(option2);
             });
+            return data;
         })
-        .catch(error => console.error('Error loading customers:', error));
+        .catch(error => {
+            console.error('Error loading customers:', error);
+            throw error;
+        });
 }
 
 function loadSuppliers() {
-    fetch('/api/companies?category=Supplier')
+    return fetch('/api/companies?category=Supplier')
         .then(response => response.json())
         .then(data => {
             suppliers = data;
@@ -144,8 +174,12 @@ function loadSuppliers() {
                     filterSelect.appendChild(option);
                 });
             }
+            return data;
         })
-        .catch(error => console.error('Error loading suppliers:', error));
+        .catch(error => {
+            console.error('Error loading suppliers:', error);
+            throw error;
+        });
 }
 
 function loadSupplierItems() {
@@ -211,21 +245,21 @@ function renderSalesTable(sales) {
         const isChecked = selectedSales.has(sale.id);
         return `
         <tr>
-            <td>
+            <td data-column="select">
                 <input type="checkbox" class="sale-checkbox" data-sale-id="${sale.id}" 
                        ${isChecked ? 'checked' : ''} 
                        onchange="toggleSaleSelection(${sale.id}, this.checked)">
             </td>
-            <td>${sale.invoice_number}</td>
-            <td>${sale.date}</td>
-            <td>${sale.customer_name}</td>
-            <td>${sale.supplier_name || '-'}</td>
-            <td class="currency">${formatCurrency(sale.total_amount)}</td>
-            <td class="currency">${formatCurrency(sale.paid_amount)}</td>
-            <td class="currency">${formatCurrency(sale.balance)}</td>
-            <td><span class="badge badge-${sale.payment_type.toLowerCase()}">${sale.payment_type}</span></td>
-            <td><span class="badge badge-${sale.status.toLowerCase()}">${sale.status}</span></td>
-            <td>
+            <td data-column="invoice_number">${sale.invoice_number}</td>
+            <td data-column="date">${sale.date}</td>
+            <td data-column="customer">${sale.customer_name}</td>
+            <td data-column="supplier">${sale.supplier_name || '-'}</td>
+            <td class="currency" data-column="total_amount">${formatCurrency(sale.total_amount)}</td>
+            <td class="currency" data-column="paid_amount">${formatCurrency(sale.paid_amount)}</td>
+            <td class="currency" data-column="balance">${formatCurrency(sale.balance)}</td>
+            <td data-column="payment_type"><span class="badge badge-${sale.payment_type.toLowerCase()}">${sale.payment_type}</span></td>
+            <td data-column="status"><span class="badge badge-${sale.status.toLowerCase()}">${sale.status}</span></td>
+            <td data-column="actions">
                 <div class="action-btns">
                     <button class="btn-icon btn-view" onclick="showSaleInvoice(${sale.id})" title="Show Invoice">👁️</button>
                     <button class="btn-icon btn-edit" onclick="editSale(${sale.id})" title="Edit">✏️</button>
@@ -239,11 +273,12 @@ function renderSalesTable(sales) {
     updateSelectAllCheckbox();
     updateDeleteButton();
     
-    // Restore sort state after table is rendered
+    // Restore sort state and column visibility after table is rendered
     setTimeout(() => {
         const table = document.getElementById('salesTable');
         if (table) {
             restoreTableSort(table);
+            applySavedSalesColumnVisibility();
         }
     }, 150);
 }
@@ -729,7 +764,7 @@ function importSales() {
     });
 }
 
-function updateSalesTotal(total, count) {
+function updateSalesTotal(total, count, totalQuantity) {
     let totalBox = document.getElementById('salesTotalBox');
     
     // Create total box if it doesn't exist
@@ -744,12 +779,22 @@ function updateSalesTotal(total, count) {
         }
     }
     
+    const qtyLabel = typeof formatNumber === 'function' ? formatNumber : (n) => String(n);
+    const qtyHtml =
+        totalQuantity !== null && totalQuantity !== undefined
+            ? `<span style="color: #1565c0; font-size: 18px; font-weight: bold; margin-left: 10px;">${qtyLabel(totalQuantity)}</span>`
+            : `<span style="color: #999; font-size: 18px; font-weight: bold; margin-left: 10px;">-</span>`;
+    
     if (total !== null && total !== undefined) {
         totalBox.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 20px;">
+            <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
                 <div>
                     <strong style="color: #1e3a5f; font-size: 16px;">Total Sales Amount:</strong>
                     <span style="color: #4caf50; font-size: 18px; font-weight: bold; margin-left: 10px;">${formatCurrency(total)}</span>
+                </div>
+                <div>
+                    <strong style="color: #1e3a5f; font-size: 16px;">Total quantity:</strong>
+                    ${qtyHtml}
                 </div>
                 <div style="color: #666; font-size: 14px;">
                     (${count} ${count === 1 ? 'sale' : 'sales'})
@@ -758,10 +803,14 @@ function updateSalesTotal(total, count) {
         `;
     } else {
         totalBox.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 20px;">
+            <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
                 <div>
                     <strong style="color: #1e3a5f; font-size: 16px;">Total Sales Amount:</strong>
                     <span style="color: #999; font-size: 18px; font-weight: bold; margin-left: 10px;">-</span>
+                </div>
+                <div>
+                    <strong style="color: #1e3a5f; font-size: 16px;">Total quantity:</strong>
+                    ${qtyHtml}
                 </div>
                 <div style="color: #666; font-size: 14px;">
                     (${count} ${count === 1 ? 'sale' : 'sales'})
@@ -827,8 +876,10 @@ function displayInvoice(sale) {
         day: 'numeric' 
     });
     
-    // Calculate totals
-    const itemsTotal = sale.items.reduce((sum, item) => sum + item.total_price, 0);
+    const totalQuantity = sale.items.reduce((sum, item) => sum + parseFloat(item.quantity || 0), 0);
+    const customerTotalBalance = sale.customer_total_balance != null
+        ? parseFloat(sale.customer_total_balance)
+        : parseFloat(sale.balance || 0);
     
     // Build invoice HTML
     let invoiceHTML = `
@@ -888,27 +939,23 @@ function displayInvoice(sale) {
                 </tbody>
             </table>
             
-            <!-- Totals -->
-            <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
-                <div style="width: 300px;">
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <tr>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Subtotal:</strong></td>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold;">${formatCurrency(itemsTotal)}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Total Amount:</strong></td>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; font-size: 18px; color: #1e3a5f;">${formatCurrency(sale.total_amount)}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Paid Amount:</strong></td>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; color: #4caf50;">${formatCurrency(sale.paid_amount)}</td>
-                        </tr>
-                        <tr>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd;"><strong>Balance:</strong></td>
-                            <td style="padding: 8px; text-align: right; border: 1px solid #ddd; font-weight: bold; color: ${sale.balance > 0 ? '#f44336' : '#4caf50'};">${formatCurrency(sale.balance)}</td>
-                        </tr>
-                    </table>
+            <!-- Totals (boxed) -->
+            <div style="display: flex; flex-wrap: wrap; gap: 14px; justify-content: flex-end; margin-bottom: 24px;">
+                <div style="min-width: 118px; padding: 14px 18px; border: 1px solid #1e3a5f; border-radius: 8px; background: #f8fafc; text-align: center; box-shadow: 0 1px 2px rgba(30,58,95,0.08);">
+                    <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; font-weight: 600;">Total Qty</div>
+                    <div style="font-size: 19px; font-weight: 700; color: #1e3a5f;">${formatNumber(totalQuantity)}</div>
+                </div>
+                <div style="min-width: 118px; padding: 14px 18px; border: 1px solid #1e3a5f; border-radius: 8px; background: #f8fafc; text-align: center; box-shadow: 0 1px 2px rgba(30,58,95,0.08);">
+                    <div style="font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; font-weight: 600;">Total</div>
+                    <div style="font-size: 19px; font-weight: 700; color: #1e3a5f;">${formatCurrency(sale.total_amount)}</div>
+                </div>
+                <div style="min-width: 118px; padding: 14px 18px; border: 1px solid #2e7d32; border-radius: 8px; background: #f1f8f4; text-align: center; box-shadow: 0 1px 2px rgba(46,125,50,0.12);">
+                    <div style="font-size: 11px; color: #547857; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; font-weight: 600;">Paid</div>
+                    <div style="font-size: 19px; font-weight: 700; color: #2e7d32;">${formatCurrency(sale.paid_amount)}</div>
+                </div>
+                <div style="min-width: 118px; padding: 14px 18px; border: 1px solid ${customerTotalBalance > 0 ? '#c62828' : '#2e7d32'}; border-radius: 8px; background: ${customerTotalBalance > 0 ? '#fff8f8' : '#f1f8f4'}; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.06);">
+                    <div style="font-size: 11px; color: ${customerTotalBalance > 0 ? '#b71c1c' : '#547857'}; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; font-weight: 600;">Total Balance</div>
+                    <div style="font-size: 19px; font-weight: 700; color: ${customerTotalBalance > 0 ? '#c62828' : '#2e7d32'};">${formatCurrency(customerTotalBalance)}</div>
                 </div>
             </div>
     `;
@@ -1012,3 +1059,108 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 });
+
+// Sales table column visibility
+function toggleSalesColumnSelector() {
+    const dropdown = document.getElementById('salesColumnSelectorDropdown');
+    if (!dropdown) return;
+    const isVisible = dropdown.style.display === 'block';
+    dropdown.style.display = isVisible ? 'none' : 'block';
+    if (!isVisible) {
+        loadSavedSalesColumnCheckboxState();
+        updateSalesColumnSelectorBadge();
+        setTimeout(() => {
+            document.addEventListener('click', closeSalesColumnSelectorOutside, true);
+        }, 0);
+    } else {
+        document.removeEventListener('click', closeSalesColumnSelectorOutside, true);
+    }
+}
+
+function closeSalesColumnSelectorOutside(event) {
+    const dropdown = document.getElementById('salesColumnSelectorDropdown');
+    const button = event.target.closest('button[onclick*="toggleSalesColumnSelector"]');
+    if (dropdown && !dropdown.contains(event.target) && !button) {
+        dropdown.style.display = 'none';
+        document.removeEventListener('click', closeSalesColumnSelectorOutside, true);
+    }
+}
+
+function selectAllSalesColumns() {
+    document.querySelectorAll('.sales-column-checkbox').forEach((cb) => { cb.checked = true; });
+    updateSalesColumnSelectorBadge();
+}
+
+function deselectAllSalesColumns() {
+    document.querySelectorAll('.sales-column-checkbox').forEach((cb) => { cb.checked = false; });
+    updateSalesColumnSelectorBadge();
+}
+
+function updateSalesColumnSelectorBadge() {
+    const checkboxes = document.querySelectorAll('.sales-column-checkbox');
+    const checkedCount = Array.from(checkboxes).filter((cb) => cb.checked).length;
+    const badge = document.getElementById('salesColumnSelectorBadge');
+    if (!badge) return;
+    if (checkedCount < checkboxes.length) {
+        badge.textContent = checkboxes.length - checkedCount;
+        badge.style.display = 'block';
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
+function saveSalesColumnVisibility() {
+    const visibility = {};
+    document.querySelectorAll('.sales-column-checkbox').forEach((cb) => {
+        visibility[cb.getAttribute('data-column')] = cb.checked;
+    });
+    localStorage.setItem('salesColumnVisibility', JSON.stringify(visibility));
+}
+
+function loadSavedSalesColumnCheckboxState() {
+    const saved = localStorage.getItem('salesColumnVisibility');
+    if (!saved) {
+        document.querySelectorAll('.sales-column-checkbox').forEach((cb) => { cb.checked = true; });
+        return;
+    }
+    try {
+        const visibility = JSON.parse(saved);
+        document.querySelectorAll('.sales-column-checkbox').forEach((cb) => {
+            const column = cb.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column)) {
+                cb.checked = visibility[column] !== false;
+            }
+        });
+    } catch (e) {
+        console.error('Error loading sales column visibility:', e);
+    }
+}
+
+function applySavedSalesColumnVisibility() {
+    const saved = localStorage.getItem('salesColumnVisibility');
+    if (!saved) return;
+    try {
+        const visibility = JSON.parse(saved);
+        const table = document.getElementById('salesTable');
+        if (!table) return;
+        table.querySelectorAll('thead th[data-column], tbody td[data-column]').forEach((cell) => {
+            const column = cell.getAttribute('data-column');
+            if (Object.prototype.hasOwnProperty.call(visibility, column) && visibility[column] === false) {
+                cell.style.display = 'none';
+            } else {
+                cell.style.display = '';
+            }
+        });
+    } catch (e) {
+        console.error('Error applying sales column visibility:', e);
+    }
+}
+
+function applySalesColumnVisibility() {
+    saveSalesColumnVisibility();
+    const dropdown = document.getElementById('salesColumnSelectorDropdown');
+    if (dropdown) dropdown.style.display = 'none';
+    document.removeEventListener('click', closeSalesColumnSelectorOutside, true);
+    applySavedSalesColumnVisibility();
+    updateSalesColumnSelectorBadge();
+}

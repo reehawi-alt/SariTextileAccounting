@@ -29,6 +29,7 @@ ENV/
 # Flask
 instance/
 .webassets-cache
+uploads/
 *.db
 *.sqlite
 *.sqlite3

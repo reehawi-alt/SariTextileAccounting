@@ -52,6 +52,10 @@
             <h3 style="color: #1e3a5f; margin-bottom: 10px;">Profit & Loss</h3>
             <p style="color: #666;">View profit and loss analysis by item and period</p>
         </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showPartnerProfitReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Partner Profit Allocation</h3>
+            <p style="color: #666;">Net operating profit from P&amp;L + expenses, split by partner shares (with charts)</p>
+        </div>
         <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showReceivablesReport()">
             <h3 style="color: #1e3a5f; margin-bottom: 10px;">Customer Receivables</h3>
             <p style="color: #666;">Outstanding customer balances</p>
@@ -94,6 +98,10 @@
             <h3 style="color: #1e3a5f; margin-bottom: 10px;">Inventory Stock</h3>
             <p style="color: #666;">Current stock levels and quantities</p>
         </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showInventoryStockAtCostReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Inventory Stock at Cost</h3>
+            <p style="color: #666;">Same as Inventory Stock, with unit cost = purchase price + COG</p>
+        </div>
         <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showInventorySnapshotReport()">
             <h3 style="color: #1e3a5f; margin-bottom: 10px;">Inventory Snapshot</h3>
             <p style="color: #666;">Stock levels on a specific date</p>
@@ -119,6 +127,18 @@
         <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showLastPurchasePriceReport()">
             <h3 style="color: #1e3a5f; margin-bottom: 10px;">Last Purchase Price</h3>
             <p style="color: #666;">Most recent purchase unit price for each item</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showLastPurchaseCogReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Last Purchase COG</h3>
+            <p style="color: #666;">COG from the most recent purchase of each item (not average)</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showDailyPurchasesReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Daily Purchase Invoice</h3>
+            <p style="color: #666;">Daily purchases grouped into one invoice per day (same layout as Daily Sales)</p>
+        </div>
+        <div class="report-card" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer;" onclick="showRepresentativeCollectionsReport()">
+            <h3 style="color: #1e3a5f; margin-bottom: 10px;">Representative Collections</h3>
+            <p style="color: #666;">Detailed collections by representative with item lines per container</p>
         </div>
     </div>
 </div>
@@ -154,6 +174,14 @@
                     <option value="Out">Out (Outflow)</option>
                 </select>
             </div>
+            <div class="form-group" id="collectedMoneyCustomerFilter" style="display: none;">
+                <label>Customer Type</label>
+                <select id="collectedMoneyCustomerType" class="form-control">
+                    <option value="both">Both</option>
+                    <option value="cash">Cash Customers</option>
+                    <option value="credit">Debit (Credit) Customers</option>
+                </select>
+            </div>
             <div class="form-group" id="inventoryMovementTypeFilter" style="display: none;">
                 <label>Movement Type</label>
                 <select id="inventoryMovementType" class="form-control">
@@ -162,11 +190,22 @@
                     <option value="sales">Sales Only</option>
                 </select>
             </div>
-            <div class="form-group" id="inventoryItemFilter" style="display: none;">
+            <div class="form-group" id="inventoryItemFilter" style="display: none; position: relative;">
                 <label>Item</label>
-                <select id="inventoryReportItem" class="form-control" onchange="loadInventoryReport()">
-                    <option value="">All Items</option>
-                </select>
+                <div class="searchable-select" id="inventoryReportItemWrapper" style="position: relative;">
+                    <input type="text" 
+                           id="inventoryReportItemSearch" 
+                           class="form-control" 
+                           placeholder="Search or select item..." 
+                           autocomplete="off"
+                           onfocus="showInventoryReportItemDropdown()"
+                           oninput="filterInventoryReportItems(this.value)"
+                           onclick="showInventoryReportItemDropdown()">
+                    <input type="hidden" id="inventoryReportItem" value="">
+                    <div id="inventoryReportItemDropdown" class="searchable-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-secondary); border: 1px solid var(--border-color); border-top: none; max-height: 300px; overflow-y: auto; z-index: 1000; box-shadow: 0 4px 6px var(--shadow);">
+                        <div class="dropdown-item" onclick="selectInventoryReportItem('', 'All Items')" style="padding: 10px; cursor: pointer; border-bottom: 1px solid var(--border-color);">All Items</div>
+                    </div>
+                </div>
             </div>
             <div class="form-group" id="profitLossItemFilter" style="display: none; position: relative;">
                 <label>Item</label>
@@ -185,9 +224,105 @@
                     </div>
                 </div>
             </div>
+            <div class="form-group" id="reportRepresentativeFilter" style="display: none;">
+                <label>Representative</label>
+                <select id="reportRepresentativeId" class="form-control">
+                    <option value="">All Representatives</option>
+                </select>
+            </div>
             <div class="form-group">
                 <button class="btn btn-primary" onclick="loadReport()">Apply Filters</button>
                 <button class="btn btn-secondary" onclick="clearReportFilters()">Clear</button>
+            </div>
+            <div class="form-group" id="profitLossColumnSelector" style="display: none; position: relative;">
+                <button class="btn btn-secondary" onclick="toggleProfitLossColumnSelector()" style="position: relative;">
+                    📊 Columns
+                    <span id="profitLossColumnSelectorBadge" style="display: none; position: absolute; top: -5px; right: -5px; background: #f44336; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 18px; text-align: center;"></span>
+                </button>
+                <div id="profitLossColumnSelectorDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 5px; background: white; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 1000; min-width: 240px; padding: 10px;">
+                    <div style="font-weight: 600; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #eee; color: #1e3a5f;">Select Columns</div>
+                    <div id="profitLossColumnCheckboxes" style="max-height: 300px; overflow-y: auto;">
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="item_code" checked> Item Code
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="quantity_sold" checked> Quantity Sold
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="total_sales" checked> Total Sales
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="cog" checked> COG
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="average_purchase_price" checked> Average Purchase Price
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="avg_purchase_price_supplier" checked> Avg Purchase Price (Supplier Curr.)
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="total_cost" checked> Total Cost
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="profit" checked> Profit
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="profit_margin" checked> Profit Margin %
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="profit-loss-column-checkbox" data-column="notes" checked> Notes
+                        </label>
+                    </div>
+                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; display: flex; gap: 5px;">
+                        <button class="btn btn-secondary" onclick="selectAllProfitLossColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Select All</button>
+                        <button class="btn btn-secondary" onclick="deselectAllProfitLossColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Deselect All</button>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button class="btn btn-primary" onclick="applyProfitLossColumnVisibility()" style="width: 100%; padding: 8px; font-size: 13px;">Apply</button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group" id="safeOutColumnSelector" style="display: none; position: relative;">
+                <button class="btn btn-secondary" onclick="toggleSafeOutColumnSelector()" style="position: relative;">
+                    📊 Columns
+                    <span id="safeOutColumnSelectorBadge" style="display: none; position: absolute; top: -5px; right: -5px; background: #f44336; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 18px; text-align: center;"></span>
+                </button>
+                <div id="safeOutColumnSelectorDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 5px; background: white; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 1000; min-width: 220px; padding: 10px;">
+                    <div style="font-weight: 600; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #eee; color: #1e3a5f;">Select Columns</div>
+                    <div id="safeOutColumnCheckboxes" style="max-height: 300px; overflow-y: auto;">
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="date" checked> Date
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="type" checked> Type
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="description" checked> Description
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="category" checked> Category
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="invoice" checked> Invoice
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="amount" checked> Amount
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="amount_base" checked> Amount (Base)
+                        </label>
+                        <label style="display: flex; align-items: center; padding: 6px 0; cursor: pointer;">
+                            <input type="checkbox" class="safe-out-column-checkbox" data-column="notes" checked> Notes
+                        </label>
+                    </div>
+                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee; display: flex; gap: 5px;">
+                        <button class="btn btn-secondary" onclick="selectAllSafeOutColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Select All</button>
+                        <button class="btn btn-secondary" onclick="deselectAllSafeOutColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Deselect All</button>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button class="btn btn-primary" onclick="applySafeOutColumnVisibility()" style="width: 100%; padding: 8px; font-size: 13px;">Apply</button>
+                    </div>
+                </div>
             </div>
             <div class="form-group" id="collectedMoneyColumnSelector" style="display: none; position: relative;">
                 <button class="btn btn-secondary" onclick="toggleCollectedMoneyColumnSelector()" style="position: relative;">
@@ -313,6 +448,22 @@
             <div class="form-group">
                 <button class="btn btn-primary" onclick="loadInventoryStockReport()">Apply Filters</button>
                 <button class="btn btn-secondary" onclick="clearInventoryStockFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inventory Stock at Cost Filters -->
+    <div class="filters" id="inventoryStockAtCostFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="inventoryStockAtCostSupplier" class="form-control" onchange="loadInventoryStockAtCostReport()">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadInventoryStockAtCostReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearInventoryStockAtCostFilters()">Clear</button>
             </div>
         </div>
     </div>
@@ -454,6 +605,28 @@
         </div>
     </div>
     
+    <!-- Last Purchase COG Filters -->
+    <div class="filters" id="lastPurchaseCogFilters" style="display: none;">
+        <div class="filters-row">
+            <div class="form-group">
+                <label>Supplier</label>
+                <select id="lastPurchaseCogSupplier" class="form-control">
+                    <option value="">All Suppliers</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Item</label>
+                <select id="lastPurchaseCogItem" class="form-control">
+                    <option value="">All Items</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <button class="btn btn-primary" onclick="loadLastPurchaseCogReport()">Apply Filters</button>
+                <button class="btn btn-secondary" onclick="clearLastPurchaseCogFilters()">Clear</button>
+            </div>
+        </div>
+    </div>
+    
     <!-- Average of Last N Sales Filters -->
     <div class="filters" id="averageLastNSalesFilters" style="display: none;">
         <div class="filters-row">
@@ -548,5 +721,6 @@ function showReportCategory(category) {
 }
 </script>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="{{ url_for('static', filename='js/reports.js') }}"></script>
 {% endblock %}

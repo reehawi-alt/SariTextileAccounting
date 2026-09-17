@@ -293,7 +293,7 @@ def process_physical_count():
         items_by_code = {item.code: item for item in items}
         
         # Calculate inventory for all items (by snapshot date)
-        from models import PurchaseItem, SaleItem, PurchaseContainer, Sale
+        from models import PurchaseItem, SaleItem, PurchaseContainer, Sale, SupplierReturn, SupplierReturnLine
         from sqlalchemy import func, case
         
         # Parse and normalize count dates up front
@@ -350,10 +350,21 @@ def process_physical_count():
              .group_by(InventoryAdjustment.item_id).all()
             adjustments_map = {item_id: Decimal(str(qty)) if qty else Decimal('0') for item_id, qty in adjustments_q}
             
+            returns_q = db.session.query(
+                SupplierReturnLine.item_id,
+                func.coalesce(func.sum(SupplierReturnLine.quantity), 0).label('total_returns')
+            ).join(SupplierReturn, SupplierReturnLine.supplier_return_id == SupplierReturn.id).filter(
+                SupplierReturn.market_id == market_id,
+                SupplierReturn.date <= snapshot_date,
+                SupplierReturnLine.item_id.in_(item_ids) if item_ids else True
+            ).group_by(SupplierReturnLine.item_id).all()
+            returns_map = {item_id: Decimal(str(qty)) for item_id, qty in returns_q}
+            
             inventory_by_date[snapshot_date] = {
                 'purchase_map': purchase_map,
                 'sales_map': sales_map,
-                'adjustments_map': adjustments_map
+                'adjustments_map': adjustments_map,
+                'returns_map': returns_map,
             }
         
         # Process each row
@@ -394,7 +405,8 @@ def process_physical_count():
                 purchases_qty = snapshot_maps['purchase_map'].get(item.id, Decimal('0'))
                 sales_qty = snapshot_maps['sales_map'].get(item.id, Decimal('0'))
                 adjustment_qty = snapshot_maps['adjustments_map'].get(item.id, Decimal('0'))
-                current_inventory = purchases_qty - sales_qty + adjustment_qty
+                returns_qty = snapshot_maps['returns_map'].get(item.id, Decimal('0'))
+                current_inventory = purchases_qty - sales_qty - returns_qty + adjustment_qty
                 
                 # Calculate difference
                 difference = real_count - current_inventory

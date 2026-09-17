@@ -78,7 +78,8 @@
     
     <div id="adjustmentMessage" style="margin-top: 20px;"></div>
     
-    <h3 style="margin-top: 30px; margin-bottom: 15px; color: #1e3a5f;">Existing Adjustments</h3>
+    <h3 style="margin-top: 30px; margin-bottom: 15px; color: #1e3a5f;">Safe Statement (All Transactions)</h3>
+    <p style="color: #666; margin-bottom: 15px; font-size: 14px;">Full list of safe transactions including sales, payments, expenses, and manual adjustments. Only manual adjustments can be edited or deleted.</p>
     <div class="table-container">
         <table class="data-table">
             <thead>
@@ -94,7 +95,7 @@
             </thead>
             <tbody id="adjustmentsTableBody">
                 <tr>
-                    <td colspan="7" class="empty-state">Loading adjustments...</td>
+                    <td colspan="7" class="empty-state">Loading...</td>
                 </tr>
             </tbody>
         </table>
@@ -342,10 +343,13 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('adjustmentDate').value = new Date().toISOString().split('T')[0];
     
     // Load market base currency
-    fetch('/api/markets/current')
-        .then(response => response.json())
+    fetch('/api/current-market')
+        .then(response => {
+            if (!response.ok) throw new Error('Failed to load market');
+            return response.json();
+        })
         .then(data => {
-            if (data.base_currency) {
+            if (data && data.base_currency) {
                 document.getElementById('adjustmentCurrency').value = data.base_currency;
             }
         })
@@ -379,31 +383,55 @@ document.addEventListener('DOMContentLoaded', function() {
         reader.onload = function(ev) {
             try {
                 const data = JSON.parse(ev.target.result);
+                const CHUNK_SIZE = 2 * 1024 * 1024;  // 2MB per request
+                const TABLE_ORDER = ['markets','market_sticky_notes','market_partners','partner_drawings','companies','items','purchase_containers','purchase_items','sales','sale_items','payments','general_expenses','safe_transactions','safe_statement_real_balances','inventory_adjustments','inventory_batches','sale_item_allocations'];
+                const payloads = [];
+                let current = null;
+                for (const table of TABLE_ORDER) {
+                    const rows = data[table] || [];
+                    let i = 0;
+                    while (i < rows.length) {
+                        if (!current || current.size >= CHUNK_SIZE) {
+                            current = { _replace: payloads.length === 0, size: 0 };
+                            payloads.push(current);
+                        }
+                        const batch = rows.slice(i, i + 500);
+                        i += 500;
+                        (current[table] = current[table] || []).push(...batch);
+                        current.size = new Blob([JSON.stringify(current)]).size;
+                    }
+                }
                 document.getElementById('importDataBtn').disabled = true;
-                document.getElementById('importDataMessage').textContent = 'Importing...';
-                document.getElementById('importDataMessage').style.color = '#666';
-                fetch('/api/import-data', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                })
-                .then(r => r.json())
-                .then(result => {
-                    document.getElementById('importDataBtn').disabled = false;
-                    if (result.error) {
-                        document.getElementById('importDataMessage').textContent = 'Error: ' + result.error;
-                        document.getElementById('importDataMessage').style.color = '#f44336';
-                    } else {
-                        document.getElementById('importDataMessage').textContent = 'Import successful! ' + (result.message || '');
-                        document.getElementById('importDataMessage').style.color = '#4caf50';
+                const msgEl = document.getElementById('importDataMessage');
+                let totalImported = 0;
+                const runChunk = async (idx) => {
+                    if (idx >= payloads.length) {
+                        msgEl.textContent = 'Import successful! ' + (payloads.length > 1 ? '(' + totalImported + ' records)' : '');
+                        msgEl.style.color = '#4caf50';
                         fileInput.value = '';
                         setTimeout(() => location.reload(), 2000);
+                        return;
                     }
-                })
-                .catch(err => {
+                    msgEl.textContent = 'Importing chunk ' + (idx + 1) + ' of ' + payloads.length + '...';
+                    msgEl.style.color = '#666';
+                    const r = await fetch('/api/import-data', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payloads[idx])
+                    });
+                    const text = await r.text();
+                    if (!r.ok) throw new Error(text || r.statusText || 'Request failed');
+                    let result;
+                    try { result = text ? JSON.parse(text) : {}; } catch (_) { throw new Error('Invalid server response'); }
+                    if (result.error) throw new Error(result.error);
+                    const m = (result.message || '').match(/(\d+)\s*records/);
+                    if (m) totalImported += parseInt(m[1], 10);
+                    await runChunk(idx + 1);
+                };
+                runChunk(0).catch(err => {
                     document.getElementById('importDataBtn').disabled = false;
-                    document.getElementById('importDataMessage').textContent = 'Error: ' + err.message;
-                    document.getElementById('importDataMessage').style.color = '#f44336';
+                    msgEl.textContent = 'Error: ' + err.message;
+                    msgEl.style.color = '#f44336';
                 });
             } catch (err) {
                 document.getElementById('importDataMessage').textContent = 'Invalid JSON file: ' + err.message;
@@ -478,14 +506,14 @@ function loadAdjustments() {
     fetch('/api/safe/transactions')
         .then(response => response.json())
         .then(data => {
-            // Filter to only show manual adjustments (no payment_id, sale_id, or general_expense_id)
-            adjustments = data.filter(t => !t.payment_id && !t.sale_id && !t.general_expense_id);
+            // Show ALL safe transactions (payments, sales, expenses, manual adjustments)
+            adjustments = Array.isArray(data) ? data : [];
             renderAdjustmentsTable();
         })
         .catch(error => {
             console.error('Error loading adjustments:', error);
             document.getElementById('adjustmentsTableBody').innerHTML = 
-                '<tr><td colspan="7" class="empty-state">Error loading adjustments</td></tr>';
+                '<tr><td colspan="7" class="empty-state">Error loading transactions</td></tr>';
         });
 }
 
@@ -493,12 +521,17 @@ function renderAdjustmentsTable() {
     const tbody = document.getElementById('adjustmentsTableBody');
     
     if (adjustments.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No adjustments found</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No transactions found</td></tr>';
         return;
     }
     
     tbody.innerHTML = adjustments.map(adj => {
-        const typeColor = adj.transaction_type === 'Inflow' ? 'green' : 'red';
+        const typeColor = adj.transaction_type === 'Inflow' || adj.transaction_type === 'Opening' ? 'green' : 'red';
+        const canEdit = adj.is_editable !== false && !adj.payment_id && !adj.sale_id && !adj.general_expense_id && !adj.partner_drawing_id;
+        const actionsHtml = canEdit
+            ? `<button class="btn-icon btn-edit" onclick="editAdjustment(${adj.id})" title="Edit">✏️</button>
+               <button class="btn-icon btn-delete" onclick="deleteAdjustment(${adj.id})" title="Delete">🗑️</button>`
+            : '<span style="color: #999; font-size: 12px;">—</span>';
         return `
             <tr>
                 <td>${formatDate(adj.date)}</td>
@@ -507,10 +540,7 @@ function renderAdjustmentsTable() {
                 <td class="currency">${formatCurrency(adj.amount)}</td>
                 <td>${adj.currency}</td>
                 <td class="currency">${formatCurrency(adj.balance_after)}</td>
-                <td>
-                    <button class="btn-icon btn-edit" onclick="editAdjustment(${adj.id})" title="Edit">✏️</button>
-                    <button class="btn-icon btn-delete" onclick="deleteAdjustment(${adj.id})" title="Delete">🗑️</button>
-                </td>
+                <td>${actionsHtml}</td>
             </tr>
         `;
     }).join('');

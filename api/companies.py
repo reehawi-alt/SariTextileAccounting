@@ -3,14 +3,21 @@ Companies API endpoints
 """
 from flask import Blueprint, request, jsonify, session, send_file
 from flask_login import login_required
-from models import db, Company, Market, Payment, PurchaseContainer, Sale
+from models import db, Company, Market, Payment, PurchaseContainer, Sale, SupplierReturn, SupplierReturnLine
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 import pandas as pd
 from io import BytesIO
 
 bp = Blueprint('companies', __name__)
+
+
+def _payment_statement_meta(payment):
+    return {
+        'payment_id': payment.id,
+        'has_proof': bool(getattr(payment, 'proof_filename', None)),
+    }
 
 @bp.route('', methods=['GET'])
 @login_required
@@ -178,7 +185,15 @@ def get_statement(company_id):
             # Regular payments are credit, loans are debit
             total_credit = sum(p.amount for p in payments_before if p.loan is not True)
             total_loan_debit = sum(p.amount for p in payments_before if p.loan is True)
-            opening_balance = total_debit + total_loan_debit - total_credit
+            returns_before_sum = db.session.query(
+                func.coalesce(func.sum(SupplierReturnLine.total_price), 0)
+            ).join(SupplierReturn, SupplierReturnLine.supplier_return_id == SupplierReturn.id).filter(
+                SupplierReturn.market_id == market_id,
+                SupplierReturn.supplier_id == company_id,
+                SupplierReturn.date < start_date_obj,
+            ).scalar()
+            returns_credit = Decimal(str(returns_before_sum or 0))
+            opening_balance = total_debit + total_loan_debit - total_credit - returns_credit
             
         elif company.category == 'Service Company':
             # Calculate balance from expense2 and payments before start_date
@@ -244,28 +259,47 @@ def get_statement(company_id):
             purchases = purchases.filter(PurchaseContainer.date <= datetime.strptime(end_date, '%Y-%m-%d').date())
         
         for p in purchases.all():
+            # One line per container: items total + expense 1 = supplier invoice total (matches external statements)
+            items_total = Decimal(str(p.total_amount))
+            exp1 = (
+                Decimal(str(p.expense1_amount))
+                if p.expense1_amount and p.expense1_amount > 0
+                else Decimal('0')
+            )
+            invoice_debit = float(items_total + exp1)
             statement.append({
                 'date': p.date.isoformat(),
-                'type': 'Purchase',
-                'description': f'Container {p.container_number}',
-                'debit': float(p.total_amount),  # Items only (excludes expense1, which is shown separately)
+                'type': 'Invoice',
+                'description': f'Container {p.container_number} - Invoice',
+                'debit': invoice_debit,
                 'credit': 0,
                 'currency': p.currency,
-                'affect_balance': True
+                'affect_balance': True,
             })
-            
-            # Add expense1 separately if exists (affects balance)
-            if p.expense1_amount and p.expense1_amount > 0:
-                # Expense1 is always in container currency (same as supplier currency), use amount directly
-                statement.append({
-                    'date': p.date.isoformat(),
-                    'type': 'Expense 1',
-                    'description': f'Container {p.container_number} - Expense 1',
-                    'debit': float(p.expense1_amount),
-                    'credit': 0,
-                    'currency': p.expense1_currency or p.currency,
-                    'affect_balance': True  # Include in balance calculation
-                })
+        
+        supplier_returns = SupplierReturn.query.filter_by(
+            supplier_id=company_id, market_id=market_id
+        )
+        if start_date:
+            supplier_returns = supplier_returns.filter(
+                SupplierReturn.date >= datetime.strptime(start_date, '%Y-%m-%d').date()
+            )
+        if end_date:
+            supplier_returns = supplier_returns.filter(
+                SupplierReturn.date <= datetime.strptime(end_date, '%Y-%m-%d').date()
+            )
+        for sr in supplier_returns.order_by(SupplierReturn.date.asc(), SupplierReturn.id.asc()).all():
+            ret_total = sum(Decimal(str(l.total_price)) for l in sr.lines)
+            ref = sr.reference_number or f'#{sr.id}'
+            statement.append({
+                'date': sr.date.isoformat(),
+                'type': 'Return',
+                'description': (f'Return to supplier ({ref})' + (f' — {sr.notes}' if sr.notes else '')),
+                'debit': 0,
+                'credit': float(ret_total),
+                'currency': sr.currency,
+                'affect_balance': True,
+            })
         
         # Payments (credit) and Loans (debit)
         # IMPORTANT: Loan payments have payment_type='In' but should be shown as debit in supplier statement
@@ -293,7 +327,8 @@ def get_statement(company_id):
                     'debit': float(p.amount),  # Original currency amount (NOT multiplied by rate)
                     'credit': 0,
                     'currency': p.currency,
-                    'affect_balance': True
+                    'affect_balance': True,
+                    **_payment_statement_meta(p),
                 })
             else:
                 # Regular payment = credit (you paid them)
@@ -305,7 +340,8 @@ def get_statement(company_id):
                     'debit': 0,
                     'credit': float(p.amount),  # Original currency amount (NOT multiplied by rate)
                     'currency': p.currency,
-                    'affect_balance': True
+                    'affect_balance': True,
+                    **_payment_statement_meta(p),
                 })
     
     elif company.category == 'Service Company':
@@ -352,7 +388,8 @@ def get_statement(company_id):
                     'debit': float(p.amount),  # Original currency amount (NOT multiplied by rate)
                     'credit': 0,
                     'currency': p.currency,
-                    'affect_balance': True
+                    'affect_balance': True,
+                    **_payment_statement_meta(p),
                 })
             else:
                 # Regular payment = credit (you paid them)
@@ -364,7 +401,8 @@ def get_statement(company_id):
                     'debit': 0,
                     'credit': float(p.amount),  # Original currency amount (NOT multiplied by rate)
                     'currency': p.currency,
-                    'affect_balance': True
+                    'affect_balance': True,
+                    **_payment_statement_meta(p),
                 })
     
     else:  # Customer
@@ -403,7 +441,8 @@ def get_statement(company_id):
                     'debit': 0,
                     'credit': float(p.amount),
                     'currency': p.currency,
-                    'affect_balance': True
+                    'affect_balance': True,
+                    **_payment_statement_meta(p),
                 })
             elif p.payment_type == 'Out':
                 # Out payment = debit (increases customer balance - refund, return, etc.)
@@ -414,7 +453,8 @@ def get_statement(company_id):
                     'debit': float(p.amount),
                     'credit': 0,
                     'currency': p.currency,
-                    'affect_balance': True
+                    'affect_balance': True,
+                    **_payment_statement_meta(p),
                 })
     
     # Sort by date
@@ -508,7 +548,15 @@ def export_statement(company_id):
             # Regular payments are credit, loans are debit
             total_credit = sum(p.amount for p in payments_before if p.loan is not True)
             total_loan_debit = sum(p.amount for p in payments_before if p.loan is True)
-            opening_balance = total_debit + total_loan_debit - total_credit
+            returns_before_sum = db.session.query(
+                func.coalesce(func.sum(SupplierReturnLine.total_price), 0)
+            ).join(SupplierReturn, SupplierReturnLine.supplier_return_id == SupplierReturn.id).filter(
+                SupplierReturn.market_id == market_id,
+                SupplierReturn.supplier_id == company_id,
+                SupplierReturn.date < start_date_obj,
+            ).scalar()
+            returns_credit = Decimal(str(returns_before_sum or 0))
+            opening_balance = total_debit + total_loan_debit - total_credit - returns_credit
             
         elif company.category == 'Service Company':
             # Calculate balance from expense2 and payments before start_date
@@ -572,28 +620,46 @@ def export_statement(company_id):
             purchases = purchases.filter(PurchaseContainer.date <= datetime.strptime(end_date, '%Y-%m-%d').date())
         
         for p in purchases.all():
+            items_total = Decimal(str(p.total_amount))
+            exp1 = (
+                Decimal(str(p.expense1_amount))
+                if p.expense1_amount and p.expense1_amount > 0
+                else Decimal('0')
+            )
+            invoice_debit = float(items_total + exp1)
             statement.append({
                 'Date': p.date.isoformat(),
-                'Type': 'Purchase',
-                'Description': f'Container {p.container_number}',
-                'Debit': float(p.total_amount),
+                'Type': 'Invoice',
+                'Description': f'Container {p.container_number} - Invoice',
+                'Debit': invoice_debit,
                 'Credit': 0,
                 'Balance': 0,
-                'affect_balance': True
+                'affect_balance': True,
             })
-            
-            # Add expense1 separately if exists (affects balance)
-            if p.expense1_amount and p.expense1_amount > 0:
-                # Expense1 is always in container currency (same as supplier currency), use amount directly
-                statement.append({
-                    'Date': p.date.isoformat(),
-                    'Type': 'Expense 1',
-                    'Description': f'Container {p.container_number} - Expense 1',
-                    'Debit': float(p.expense1_amount),
-                    'Credit': 0,
-                    'Balance': 0,
-                    'affect_balance': True  # Include in balance calculation
-                })
+        
+        supplier_returns = SupplierReturn.query.filter_by(
+            supplier_id=company_id, market_id=market_id
+        )
+        if start_date:
+            supplier_returns = supplier_returns.filter(
+                SupplierReturn.date >= datetime.strptime(start_date, '%Y-%m-%d').date()
+            )
+        if end_date:
+            supplier_returns = supplier_returns.filter(
+                SupplierReturn.date <= datetime.strptime(end_date, '%Y-%m-%d').date()
+            )
+        for sr in supplier_returns.order_by(SupplierReturn.date.asc(), SupplierReturn.id.asc()).all():
+            ret_total = sum(Decimal(str(l.total_price)) for l in sr.lines)
+            ref = sr.reference_number or f'#{sr.id}'
+            statement.append({
+                'Date': sr.date.isoformat(),
+                'Type': 'Return',
+                'Description': f'Return to supplier ({ref})' + (f' — {sr.notes}' if sr.notes else ''),
+                'Debit': 0,
+                'Credit': float(ret_total),
+                'Balance': 0,
+                'affect_balance': True,
+            })
         
         # IMPORTANT: Loan payments have payment_type='In' but should be shown as debit in supplier statement
         payments = Payment.query.filter_by(company_id=company_id, market_id=market_id).filter(

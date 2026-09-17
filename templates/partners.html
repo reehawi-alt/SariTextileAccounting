@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block title %}Partners - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Partners</h1>
+</div>
+
+<div class="partners-page-layout">
+<div class="partners-page-main">
+<!-- Section navigation (same pattern as Administration) -->
+<div style="display: flex; gap: 15px; margin-bottom: 14px; flex-wrap: wrap;">
+    <button type="button" id="partnersSectionBtn" class="btn btn-primary" onclick="showPartnersPageSection('partners')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
+        👥 Partners &amp; shares
+    </button>
+    <button type="button" id="partnerDrawingsSectionBtn" class="btn btn-secondary" onclick="showPartnersPageSection('drawings')" style="padding: 12px 24px; font-size: 16px; font-weight: 600;">
+        💸 Partner drawings
+    </button>
+</div>
+
+<!-- Partner-related reports -->
+<div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center;">
+    <span style="color: var(--text-secondary); font-size: 14px; font-weight: 600; margin-right: 4px;">Reports</span>
+    <a class="btn btn-secondary" href="{{ url_for('reports_page') }}?report=partner-profit" style="padding: 10px 18px; font-weight: 600;">📊 Partner Profit Allocation</a>
+    <a class="btn btn-secondary" href="{{ url_for('reports_page') }}?report=profit-loss" style="padding: 10px 18px; font-weight: 600;">📈 Profit &amp; Loss</a>
+    <a class="btn btn-secondary" href="{{ url_for('reports_page') }}?report=safe" style="padding: 10px 18px; font-weight: 600;">💰 Safe Movement</a>
+    <a class="btn btn-secondary" href="{{ url_for('reports_page') }}?report=safe-out" style="padding: 10px 18px; font-weight: 600;">📤 Safe Out</a>
+    <a class="btn btn-secondary" href="{{ url_for('safe_statement_page') }}" style="padding: 10px 18px; font-weight: 600;">📋 Safe Statement</a>
+    <a class="btn btn-secondary" href="{{ url_for('reports_page') }}" style="padding: 10px 18px; font-weight: 600;">All reports</a>
+</div>
+
+<div id="partnersMainSection" style="background: white; padding: 24px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
+<div class="action-buttons" style="margin-bottom: 16px;">
+    <button type="button" class="btn btn-primary" onclick="openPartnerModal()">+ Add Partner</button>
+</div>
+
+<div id="partnerShareSummary" class="report-summary" style="margin-bottom: 20px;">
+    <h3 style="margin-top: 0;">Share total</h3>
+    <p id="partnerShareSummaryText" style="margin: 0;">Loading…</p>
+</div>
+
+<div class="table-container">
+    <table id="partnersTable">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th class="text-right">Share %</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="partnersTableBody">
+            <tr><td colspan="3" class="empty-state">Loading…</td></tr>
+        </tbody>
+    </table>
+</div>
+</div>
+
+<div id="partnerDrawingsSection" style="display: none; background: white; padding: 24px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
+<h2 style="margin: 0 0 8px 0; color: #1e3a5f; font-size: 1.25rem;">Partner drawings</h2>
+<p style="color: var(--text-secondary); margin: 0 0 12px 0; font-size: 14px;">
+    Record withdrawals by partner. Edit or delete here only—do not change linked rows in Administration (safe) or you may break balances.
+</p>
+<div class="filters" style="margin-bottom: 16px;">
+    <div class="filters-row">
+        <div class="form-group">
+            <label>From</label>
+            <input type="date" id="drawingStartDate" class="form-control">
+        </div>
+        <div class="form-group">
+            <label>To</label>
+            <input type="date" id="drawingEndDate" class="form-control">
+        </div>
+        <div class="form-group" style="align-self: flex-end;">
+            <button type="button" class="btn btn-secondary" onclick="loadDrawings()">Apply dates</button>
+        </div>
+    </div>
+</div>
+<div class="action-buttons" style="margin-bottom: 12px;">
+    <button type="button" class="btn btn-primary" onclick="openDrawingModal()">+ Add drawing</button>
+</div>
+<div id="drawingsSummary" class="report-summary" style="margin-bottom: 12px; display: none;">
+    <p id="drawingsSummaryText" style="margin: 0;"></p>
+</div>
+<div class="table-container">
+    <table id="drawingsTable">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Partner</th>
+                <th>Description</th>
+                <th class="text-right">Amount</th>
+                <th class="text-right">Base (<span id="drawingBaseCurrencyLabel">—</span>)</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="drawingsTableBody">
+            <tr><td colspan="6" class="empty-state">Loading…</td></tr>
+        </tbody>
+    </table>
+</div>
+</div>
+</div>
+
+<aside class="partners-help-aside" aria-label="Partners help">
+    <h3>How this works</h3>
+    <ul>
+        <li>Partners and share % apply to the <strong>current market</strong>. Totals should be <strong>100%</strong> to run Partner Profit Allocation.</li>
+        <li><strong>Drawings</strong> are cash taken out by a partner; each posts a <strong>safe outflow</strong> (same pattern as general expenses) so the live safe balance stays correct.</li>
+    </ul>
+</aside>
+</div>
+
+<div id="drawingModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeDrawingModal()">&times;</span>
+        <h2 id="drawingModalTitle">Add drawing</h2>
+        <form id="drawingForm" onsubmit="saveDrawing(event)">
+            <input type="hidden" id="drawingId">
+            <div class="form-group">
+                <label>Partner *</label>
+                <select id="drawingPartnerId" class="form-control" required></select>
+            </div>
+            <div class="form-group">
+                <label>Date *</label>
+                <input type="date" id="drawingDate" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <input type="text" id="drawingDescription" class="form-control" maxlength="500" placeholder="e.g. Cash withdrawal">
+            </div>
+            <div class="form-row" style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <div class="form-group" style="flex: 1; min-width: 120px;">
+                    <label>Amount *</label>
+                    <input type="number" id="drawingAmount" class="form-control" required min="0.01" step="0.01">
+                </div>
+                <div class="form-group" style="flex: 1; min-width: 100px;">
+                    <label>Currency</label>
+                    <input type="text" id="drawingCurrency" class="form-control" maxlength="10">
+                </div>
+                <div class="form-group" style="flex: 1; min-width: 100px;">
+                    <label>Exchange rate</label>
+                    <input type="number" id="drawingExchangeRate" class="form-control" min="0.0001" step="0.0001" value="1">
+                </div>
+            </div>
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">Save</button>
+                <button type="button" class="btn btn-secondary" onclick="closeDrawingModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="partnerModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closePartnerModal()">&times;</span>
+        <h2 id="partnerModalTitle">Add Partner</h2>
+        <form id="partnerForm" onsubmit="savePartner(event)">
+            <input type="hidden" id="partnerId">
+            <div class="form-group">
+                <label>Name *</label>
+                <input type="text" id="partnerName" class="form-control" required maxlength="200">
+            </div>
+            <div class="form-group">
+                <label>Profit share % *</label>
+                <input type="number" id="partnerSharePercent" class="form-control" required min="0" max="100" step="0.01" placeholder="e.g. 50">
+            </div>
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">Save</button>
+                <button type="button" class="btn btn-secondary" onclick="closePartnerModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/partners.js') }}"></script>
+{% endblock %}

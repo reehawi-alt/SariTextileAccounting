@@ -3,13 +3,166 @@ Purchases API endpoints
 """
 from flask import Blueprint, request, jsonify, session, send_file
 from flask_login import login_required
-from models import db, PurchaseContainer, PurchaseItem, Item, Market, Company, SafeTransaction
+from models import (
+    db, PurchaseContainer, PurchaseItem, Item, Market, Company, SafeTransaction,
+    PurchasingRepresentative, Payment, InventoryBatch, SaleItemAllocation,
+    SupplierReturnAllocation,
+)
 from decimal import Decimal
 from datetime import datetime
 import pandas as pd
 from io import BytesIO
 
 bp = Blueprint('purchases', __name__)
+
+
+def _expense_in_container_currency(container, expense_num):
+    """Return expense 1/2/3 amount converted to the container's currency."""
+    amount = getattr(container, f'expense{expense_num}_amount', None)
+    if not amount or amount <= 0:
+        return Decimal('0')
+    expense_currency = getattr(container, f'expense{expense_num}_currency', None)
+    if expense_currency == container.currency:
+        return Decimal(str(amount))
+    expense_base = Decimal(str(amount)) * Decimal(str(getattr(container, f'expense{expense_num}_exchange_rate', None) or 1))
+    container_rate = Decimal(str(container.exchange_rate or 1))
+    if container_rate > 0:
+        return expense_base / container_rate
+    return Decimal('0')
+
+
+def _container_supplier_cost(container):
+    """Items total + expense1 in container currency (supplier payable basis)."""
+    return Decimal(str(container.total_amount)) + _expense_in_container_currency(container, 1)
+
+
+def _resolve_representative_id(market_id, raw_value):
+    """Validate optional representative_id for current market; return int or None."""
+    if raw_value in (None, '', 0, '0'):
+        return None
+    try:
+        rid = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+    rep = PurchasingRepresentative.query.filter_by(id=rid, market_id=market_id).first()
+    if not rep:
+        return None
+    return rep.id
+
+
+def _representative_cash_payment_amount(container):
+    """Supplier settlement for rep cash purchase: items + expense1 (same currency as container)."""
+    items_total = sum(
+        (Decimal(str(i.total_price)) for i in PurchaseItem.query.filter_by(container_id=container.id).all()),
+        Decimal('0'),
+    )
+    expense1 = Decimal(str(container.expense1_amount or 0))
+    return items_total + expense1
+
+
+def _remove_representative_cash_payment(container):
+    """Remove auto cash payments linked to this container (and their safe rows)."""
+    payments = Payment.query.filter_by(purchase_container_id=container.id).all()
+    for payment in payments:
+        SafeTransaction.query.filter_by(payment_id=payment.id).delete()
+        db.session.delete(payment)
+
+
+def _sync_representative_cash_payment(container):
+    """
+    When container has a purchasing representative: ensure one Payment Out to supplier
+    (+ Safe Outflow). When no representative: remove any auto-linked payment.
+    Does not run for normal (untagged) purchases — workflow unchanged.
+    Returns True if safe balances may need recalculation.
+    """
+    if not container.representative_id:
+        existing = Payment.query.filter_by(purchase_container_id=container.id).count()
+        _remove_representative_cash_payment(container)
+        return existing > 0
+
+    amount = _representative_cash_payment_amount(container)
+    if amount <= 0:
+        existing = Payment.query.filter_by(purchase_container_id=container.id).count()
+        _remove_representative_cash_payment(container)
+        return existing > 0
+
+    exchange_rate = Decimal(str(container.exchange_rate or 1))
+    amount_base = amount * exchange_rate
+    supplier = container.supplier
+    supplier_name = supplier.name if supplier else 'Supplier'
+    rep_name = container.representative.name if container.representative else ''
+    notes = f'Auto cash purchase – Container {container.container_number}'
+    if rep_name:
+        notes += f' (Rep: {rep_name})'
+
+    payment = Payment.query.filter_by(purchase_container_id=container.id).first()
+    if payment:
+        payment.company_id = container.supplier_id
+        payment.payment_type = 'Out'
+        payment.amount = amount
+        payment.currency = container.currency
+        payment.exchange_rate = exchange_rate
+        payment.amount_base_currency_stored = amount_base
+        payment.date = container.date
+        payment.notes = notes
+        payment.loan = False
+        payment.sale_id = None
+    else:
+        payment = Payment(
+            market_id=container.market_id,
+            company_id=container.supplier_id,
+            purchase_container_id=container.id,
+            sale_id=None,
+            payment_type='Out',
+            amount=amount,
+            currency=container.currency,
+            exchange_rate=exchange_rate,
+            amount_base_currency_stored=amount_base,
+            date=container.date,
+            notes=notes,
+            loan=False,
+        )
+        db.session.add(payment)
+        db.session.flush()
+
+    description = f'Payment to {supplier_name} – Container {container.container_number} (cash / representative)'
+    safe_txn = SafeTransaction.query.filter_by(payment_id=payment.id).first()
+    q = SafeTransaction.query.filter_by(market_id=container.market_id)
+    if safe_txn:
+        q = q.filter(SafeTransaction.id != safe_txn.id)
+    last_transaction = q.order_by(SafeTransaction.date.desc(), SafeTransaction.id.desc()).first()
+    balance_before = last_transaction.balance_after if last_transaction else Decimal('0')
+
+    balance_after = balance_before - amount_base
+    safe_rate = amount_base / amount if amount > 0 else exchange_rate
+
+    if safe_txn:
+        safe_txn.transaction_type = 'Outflow'
+        safe_txn.amount = amount
+        safe_txn.currency = container.currency
+        safe_txn.exchange_rate = safe_rate
+        safe_txn.amount_base_currency_stored = amount_base
+        safe_txn.date = container.date
+        safe_txn.description = description
+        safe_txn.balance_after = balance_after
+        safe_txn.payment_id = payment.id
+    else:
+        safe_txn = SafeTransaction(
+            market_id=container.market_id,
+            transaction_type='Outflow',
+            amount=amount,
+            currency=container.currency,
+            exchange_rate=safe_rate,
+            amount_base_currency_stored=amount_base,
+            date=container.date,
+            description=description,
+            payment_id=payment.id,
+            balance_after=balance_after,
+        )
+        db.session.add(safe_txn)
+
+    return True
+
 
 @bp.route('/containers', methods=['GET'])
 @login_required
@@ -26,17 +179,32 @@ def get_containers():
     
     containers = query.order_by(PurchaseContainer.date.desc(), PurchaseContainer.id.desc()).all()
     
-    return jsonify([{
-        'id': c.id,
-        'container_number': c.container_number,
-        'supplier_id': c.supplier_id,
-        'supplier_name': c.supplier.name,
-        'currency': c.currency,
-        'exchange_rate': float(c.exchange_rate),
-        'date': c.date.isoformat(),
-        'total_amount': float(c.total_amount),
-        'notes': c.notes
-    } for c in containers])
+    result = []
+    for c in containers:
+        total_qty = sum(float(pi.quantity) for pi in c.items)
+        total_weight = sum(float(pi.quantity) * float(pi.item.weight) for pi in c.items)
+        expense1 = _expense_in_container_currency(c, 1)
+        expense2 = _expense_in_container_currency(c, 2)
+        supplier_cost = _container_supplier_cost(c)
+        result.append({
+            'id': c.id,
+            'container_number': c.container_number,
+            'supplier_id': c.supplier_id,
+            'supplier_name': c.supplier.name,
+            'representative_id': c.representative_id,
+            'representative_name': c.representative.name if c.representative else None,
+            'currency': c.currency,
+            'exchange_rate': float(c.exchange_rate),
+            'date': c.date.isoformat(),
+            'total_amount': float(c.total_amount),
+            'expense1_amount': float(expense1),
+            'expense2_amount': float(expense2),
+            'supplier_cost': float(supplier_cost),
+            'total_quantity': total_qty,
+            'total_weight': total_weight,
+            'notes': c.notes
+        })
+    return jsonify(result)
 
 @bp.route('/containers', methods=['POST'])
 @login_required
@@ -71,6 +239,7 @@ def create_container():
         market_id=market_id,
         container_number=data['container_number'],
         supplier_id=data['supplier_id'],
+        representative_id=_resolve_representative_id(market_id, data.get('representative_id')),
         currency=data['currency'],
         exchange_rate=Decimal(str(data['exchange_rate'])),
         date=datetime.strptime(data['date'], '%Y-%m-%d').date(),
@@ -135,8 +304,15 @@ def create_container():
             balance_after=balance_after
         )
         db.session.add(safe_transaction)
+
+    # Representative cash purchase → Payment Out to supplier (only when tagged)
+    needs_safe_recalc = bool(_sync_representative_cash_payment(container))
     
     db.session.commit()
+
+    if needs_safe_recalc or (container.expense3_amount and container.expense3_amount > 0):
+        from api.safe import recalc_safe_balances
+        recalc_safe_balances(market_id)
     
     # Create inventory batches if FIFO is active
     from models import Market
@@ -150,6 +326,8 @@ def create_container():
         'container_number': container.container_number,
         'supplier_id': container.supplier_id,
         'supplier_name': container.supplier.name,
+        'representative_id': container.representative_id,
+        'representative_name': container.representative.name if container.representative else None,
         'currency': container.currency,
         'exchange_rate': float(container.exchange_rate),
         'date': container.date.isoformat(),
@@ -192,6 +370,8 @@ def get_container(container_id):
         'container_number': container.container_number,
         'supplier_id': container.supplier_id,
         'supplier_name': container.supplier.name,
+        'representative_id': container.representative_id,
+        'representative_name': container.representative.name if container.representative else None,
         'currency': container.currency,
         'exchange_rate': float(container.exchange_rate),
         'date': container.date.isoformat(),
@@ -228,6 +408,8 @@ def update_container(container_id):
         
         container.container_number = data.get('container_number', container.container_number)
         container.supplier_id = data.get('supplier_id', container.supplier_id)
+        if 'representative_id' in data:
+            container.representative_id = _resolve_representative_id(market_id, data.get('representative_id'))
         container.currency = data.get('currency', container.currency)
         container.exchange_rate = Decimal(str(data.get('exchange_rate', container.exchange_rate)))
         if data.get('date'):
@@ -332,6 +514,12 @@ def update_container(container_id):
                 )
                 db.session.add(item)
         
+        db.session.flush()
+        db.session.refresh(container)
+
+        # Representative cash purchase sync (only when tagged; removes payment if untagged)
+        needs_rep_payment_recalc = _sync_representative_cash_payment(container)
+
         db.session.commit()
         
         # Create/update inventory batches if FIFO is active
@@ -339,21 +527,18 @@ def update_container(container_id):
         market = Market.query.get(market_id)
         if market and getattr(market, 'calculation_method', 'Average') == 'FIFO':
             from api.fifo_calculations import create_inventory_batches_for_container
-            # Delete existing batches and recreate
             from models import InventoryBatch
             InventoryBatch.query.filter_by(container_id=container_id).delete()
             db.session.commit()
             create_inventory_batches_for_container(container_id)
         
-        # Recalculate safe balances if expense3 changed
-        if 'expense3_amount' in data:
+        # Recalculate safe balances if expense3 or representative cash payment changed
+        if 'expense3_amount' in data or needs_rep_payment_recalc or 'representative_id' in data:
             from api.safe import recalc_safe_balances
             recalc_safe_balances(market_id)
         
-        # Refresh container to get updated items
         db.session.refresh(container)
         
-        # Return full container with items
         items = [{
             'id': i.id,
             'item_id': i.item_id,
@@ -369,6 +554,8 @@ def update_container(container_id):
             'container_number': container.container_number,
             'supplier_id': container.supplier_id,
             'supplier_name': container.supplier.name,
+            'representative_id': container.representative_id,
+            'representative_name': container.representative.name if container.representative else None,
             'currency': container.currency,
             'exchange_rate': float(container.exchange_rate),
             'date': container.date.isoformat(),
@@ -394,33 +581,78 @@ def update_container(container_id):
         print(traceback.format_exc())
         return jsonify({'error': f'Error updating container: {str(e)}'}), 500
 
+def _delete_container_inventory_batches(container_id):
+    """
+    Remove FIFO batches for a container when safe to delete.
+    Raises ValueError if stock from this purchase was used in sales or supplier returns.
+    """
+    batch_ids = [
+        row[0] for row in db.session.query(InventoryBatch.id).filter_by(container_id=container_id).all()
+    ]
+    if not batch_ids:
+        return
+
+    sale_alloc_count = SaleItemAllocation.query.filter(
+        SaleItemAllocation.batch_id.in_(batch_ids)
+    ).count()
+    if sale_alloc_count:
+        raise ValueError(
+            'Cannot delete: inventory from this purchase has been used in sales (FIFO). '
+            'Adjust or remove related sales first.'
+        )
+
+    return_alloc_count = SupplierReturnAllocation.query.filter(
+        SupplierReturnAllocation.batch_id.in_(batch_ids)
+    ).count()
+    if return_alloc_count:
+        raise ValueError(
+            'Cannot delete: inventory from this purchase was returned to the supplier. '
+            'Remove the supplier return first.'
+        )
+
+    InventoryBatch.query.filter_by(container_id=container_id).delete(synchronize_session=False)
+
+
 @bp.route('/containers/<int:container_id>', methods=['DELETE'])
 @login_required
 def delete_container(container_id):
     market_id = session.get('current_market_id')
     container = PurchaseContainer.query.filter_by(id=container_id, market_id=market_id).first()
-    
+
     if not container:
         return jsonify({'error': 'Container not found'}), 404
-    
-    # Delete related safe transaction for expense3 if it exists
-    safe_txn = SafeTransaction.query.filter(
-        SafeTransaction.market_id == market_id,
-        SafeTransaction.description.like(f'%Container {container.container_number}%Expense 3%')
-    ).first()
-    
-    if safe_txn:
-        db.session.delete(safe_txn)
-    
-    # Delete the container (purchase items will be deleted via cascade)
-    db.session.delete(container)
-    db.session.commit()
-    
-    # Recalculate safe balances after deletion
-    from api.safe import recalc_safe_balances
-    recalc_safe_balances(market_id)
-    
-    return jsonify({'success': True})
+
+    try:
+        _delete_container_inventory_batches(container_id)
+
+        # Remove auto representative cash payment first (if any)
+        _remove_representative_cash_payment(container)
+
+        # Delete related safe transaction for expense3 if it exists
+        safe_txn = SafeTransaction.query.filter(
+            SafeTransaction.market_id == market_id,
+            SafeTransaction.description.like(f'%Container {container.container_number}%Expense 3%')
+        ).first()
+
+        if safe_txn:
+            db.session.delete(safe_txn)
+
+        db.session.delete(container)
+        db.session.commit()
+
+        from api.safe import recalc_safe_balances
+        recalc_safe_balances(market_id)
+
+        return jsonify({'success': True})
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        print(f"Error deleting container: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': f'Error deleting container: {str(e)}'}), 500
 
 @bp.route('/by-supplier', methods=['GET'])
 @login_required
@@ -508,6 +740,7 @@ def import_containers():
     - Quantity
     - UnitPrice
     - Notes (optional)
+    - Representative (optional; purchasing representative name in this market)
     """
     market_id = session.get('current_market_id')
     if not market_id:
@@ -525,10 +758,13 @@ def import_containers():
 
     try:
         try:
+            # Prefer Items Detail sheet (export format) when present for round-trip
             if file.filename.endswith('.xlsx'):
-                df = pd.read_excel(file, engine='openpyxl')
+                xl = pd.ExcelFile(file, engine='openpyxl')
             else:
-                df = pd.read_excel(file)
+                xl = pd.ExcelFile(file)
+            sheet_name = 'Items Detail' if 'Items Detail' in xl.sheet_names else xl.sheet_names[0]
+            df = pd.read_excel(xl, sheet_name=sheet_name)
         except Exception as e:
             return jsonify({'error': f'Error reading Excel file: {str(e)}'}), 400
 
@@ -536,18 +772,38 @@ def import_containers():
             return jsonify({'error': 'Excel file is empty'}), 400
 
         df.columns = df.columns.str.strip()
+        # Accept both import-style and export-style headers for round-trip
+        column_aliases = {
+            'Container Number': 'ContainerNumber',
+            'Exchange Rate': 'ExchangeRate',
+            'Item Code': 'ItemCode',
+            'Unit Price': 'UnitPrice',
+        }
+        df = df.rename(columns={k: v for k, v in column_aliases.items() if k in df.columns})
+
         required_cols = ['ContainerNumber', 'Date', 'Supplier', 'Currency', 'ExchangeRate', 'ItemCode', 'Quantity', 'UnitPrice']
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
-            return jsonify({'error': f'Missing columns: {", ".join(missing)}. Found: {", ".join(df.columns.tolist())}'}), 400
+            return jsonify({
+                'error': (
+                    f'Missing columns: {", ".join(missing)}. Found: {", ".join(df.columns.tolist())}. '
+                    f'Use a sheet with one row per item (export "Items Detail" sheet works).'
+                )
+            }), 400
 
         errors = []
         created_containers = 0
         created_items = 0
+        needs_safe_recalc = False
 
         # Cache lookups
         suppliers_by_name = {s.name: s for s in Company.query.filter_by(market_id=market_id, category='Supplier').all()}
         items_by_code = {i.code: i for i in Item.query.filter_by(market_id=market_id).all()}
+        reps_by_name = {
+            r.name.strip().lower(): r
+            for r in PurchasingRepresentative.query.filter_by(market_id=market_id).all()
+        }
+        has_rep_col = 'Representative' in df.columns
 
         # Group rows by container number to create once
         grouped = df.groupby('ContainerNumber')
@@ -577,11 +833,25 @@ def import_containers():
 
             notes = str(first_row['Notes']).strip() if 'Notes' in group.columns and pd.notna(first_row.get('Notes')) else ''
 
+            representative_id = None
+            if has_rep_col and pd.notna(first_row.get('Representative')):
+                rep_name = str(first_row['Representative']).strip()
+                if rep_name and rep_name.lower() not in ('none', '-', 'nan'):
+                    rep = reps_by_name.get(rep_name.lower())
+                    if not rep:
+                        errors.append(
+                            f'Container {container_number}: Representative "{rep_name}" not found. '
+                            f'Add them under Purchases → Purchasing Representatives first.'
+                        )
+                        continue
+                    representative_id = rep.id
+
             # Create container
             container = PurchaseContainer(
                 market_id=market_id,
                 container_number=str(container_number).strip(),
                 supplier_id=supplier.id,
+                representative_id=representative_id,
                 currency=currency,
                 exchange_rate=exchange_rate,
                 date=date_val,
@@ -620,7 +890,15 @@ def import_containers():
                 db.session.add(purchase_item)
                 created_items += 1
 
+            db.session.flush()
+            if _sync_representative_cash_payment(container):
+                needs_safe_recalc = True
+
         db.session.commit()
+
+        if needs_safe_recalc:
+            from api.safe import recalc_safe_balances
+            recalc_safe_balances(market_id)
 
         return jsonify({
             'success': True,
@@ -677,6 +955,7 @@ def export_purchases():
             'Container Number': container.container_number,
             'Date': container.date.isoformat() if container.date else '',
             'Supplier': container.supplier.name if container.supplier else '',
+            'Representative': container.representative.name if container.representative else '',
             'Currency': container.currency or '',
             'Exchange Rate': float(container.exchange_rate) if container.exchange_rate else 0,
             'Total Amount': float(container.total_amount) if container.total_amount else 0,
@@ -710,24 +989,26 @@ def export_purchases():
                 )
                 worksheet_summary.column_dimensions[get_column_letter(idx + 1)].width = min(max_length + 2, 50)
             
-            # Detailed items sheet
+            # Detailed items sheet (import-friendly columns + Representative)
             items_rows = []
             for container in containers:
                 items = PurchaseItem.query.filter_by(container_id=container.id).all()
                 for item in items:
                     items_rows.append({
-                        'Container Number': container.container_number,
+                        'ContainerNumber': container.container_number,
                         'Date': container.date.isoformat() if container.date else '',
                         'Supplier': container.supplier.name if container.supplier else '',
-                        'Item Code': item.item.code if item.item else '',
+                        'Representative': container.representative.name if container.representative else '',
+                        'Currency': container.currency or '',
+                        'ExchangeRate': float(container.exchange_rate) if container.exchange_rate else 0,
+                        'ItemCode': item.item.code if item.item else '',
                         'Item Name': item.item.name if item.item else '',
                         'Quantity': float(item.quantity),
-                        'Unit Price': float(item.unit_price),
+                        'UnitPrice': float(item.unit_price),
                         'Total Price': float(item.total_price),
                         'Unit Weight': float(item.item.weight) if item.item and item.item.weight else 0,
                         'Total Weight': float(item.item.weight or 0) * float(item.quantity) if item.item else 0,
-                        'Currency': container.currency or '',
-                        'Exchange Rate': float(container.exchange_rate) if container.exchange_rate else 0
+                        'Notes': container.notes or '',
                     })
             
             if items_rows:

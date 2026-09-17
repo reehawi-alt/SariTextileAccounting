@@ -8,6 +8,7 @@
     <div class="action-buttons">
         <button class="btn btn-danger" id="deleteSelectedBtn" onclick="deleteSelectedSales()" style="display: none;">🗑️ Delete Selected</button>
         <button id="salesImportBtn" class="btn btn-secondary" type="button" onclick="openSalesImportModal()">Import from Excel</button>
+        <button id="salesExportBtn" class="btn btn-secondary" type="button" onclick="exportSalesToExcel()">Export to Excel</button>
         <button class="btn btn-primary" type="button" onclick="openAddSaleModal()">+ Add Sale</button>
     </div>
 </div>
@@ -39,6 +40,57 @@
             <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
             <button class="btn btn-secondary" onclick="clearFilters()">Clear</button>
         </div>
+        <div class="form-group" id="salesColumnSelector" style="position: relative; margin-left: auto;">
+            <button type="button" class="btn btn-secondary" onclick="toggleSalesColumnSelector()" style="position: relative;">
+                Columns
+                <span id="salesColumnSelectorBadge" style="display: none; position: absolute; top: -5px; right: -5px; background: #f44336; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 18px; text-align: center;"></span>
+            </button>
+            <div id="salesColumnSelectorDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 5px; background: white; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 1000; min-width: 220px; padding: 10px;">
+                <div style="font-weight: 600; margin-bottom: 8px; color: #1e3a5f;">Show columns</div>
+                <div id="salesColumnCheckboxes" style="max-height: 320px; overflow-y: auto;">
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="select" checked> Select
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="invoice_number" checked> Invoice No
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="date" checked> Date
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="customer" checked> Customer
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="supplier" checked> Supplier
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="total_amount" checked> Total Amount
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="paid_amount" checked> Paid Amount
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="balance" checked> Balance
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="payment_type" checked> Payment Type
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="status" checked> Status
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="sales-column-checkbox" data-column="actions" checked> Actions
+                    </label>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 10px;">
+                    <button type="button" class="btn btn-secondary" onclick="selectAllSalesColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Select All</button>
+                    <button type="button" class="btn btn-secondary" onclick="deselectAllSalesColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Deselect All</button>
+                </div>
+                <div style="margin-top: 8px;">
+                    <button type="button" class="btn btn-primary" onclick="applySalesColumnVisibility()" style="width: 100%; padding: 8px; font-size: 13px;">Apply</button>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -47,19 +99,19 @@
     <table id="salesTable">
         <thead>
             <tr>
-                <th style="width: 50px;">
+                <th style="width: 50px;" data-column="select">
                     <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()" title="Select All">
                 </th>
-                <th class="sortable">Invoice No</th>
-                <th class="sortable">Date</th>
-                <th class="sortable">Customer</th>
-                <th class="sortable">Supplier</th>
-                <th class="sortable">Total Amount</th>
-                <th class="sortable">Paid Amount</th>
-                <th class="sortable">Balance</th>
-                <th>Payment Type</th>
-                <th>Status</th>
-                <th>Actions</th>
+                <th class="sortable" data-column="invoice_number">Invoice No</th>
+                <th class="sortable" data-column="date">Date</th>
+                <th class="sortable" data-column="customer">Customer</th>
+                <th class="sortable" data-column="supplier">Supplier</th>
+                <th class="sortable" data-column="total_amount">Total Amount</th>
+                <th class="sortable" data-column="paid_amount">Paid Amount</th>
+                <th class="sortable" data-column="balance">Balance</th>
+                <th data-column="payment_type">Payment Type</th>
+                <th data-column="status">Status</th>
+                <th data-column="actions">Actions</th>
             </tr>
         </thead>
         <tbody id="salesTableBody">

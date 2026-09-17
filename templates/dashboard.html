@@ -21,8 +21,8 @@
             <input type="date" id="dailyReportDate" class="dashboard-form-input" required>
         </div>
         <div class="dashboard-form-group">
-            <label class="dashboard-form-label">Currency Rate *</label>
-            <input type="number" id="dailyReportRate" step="0.01" value="750" class="dashboard-form-input" required>
+            <label class="dashboard-form-label" title="Per Safe Statement row for the selected date when filled; otherwise 0.">Currency Rate *</label>
+            <input type="number" id="dailyReportRate" step="0.0001" value="0" class="dashboard-form-input" required title="Loaded from Safe Statement (Currency Rate) for this date when set.">
         </div>
         <div class="dashboard-form-group">
             <label class="dashboard-form-label">Real Balance</label>
@@ -39,7 +39,7 @@
                 <tr>
                     <th>DESCRIPTION</th>
                     <th class="text-right" id="baseCurrencyHeader">{{ market.base_currency if market else 'CFA' }}</th>
-                    <th class="text-right">USD RATE (<span id="rateDisplay">750</span>)</th>
+                    <th class="text-right">USD RATE (<span id="rateDisplay">0</span>)</th>
                 </tr>
             </thead>
             <tbody>
@@ -134,6 +134,38 @@
                     </tfoot>
                 </table>
             </div>
+
+            <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                    <input type="text"
+                           id="selectedStockItemSearch"
+                           class="dashboard-form-input"
+                           list="selectedStockItemList"
+                           placeholder="Add item…"
+                           autocomplete="off"
+                           style="flex: 1; font-size: 12px; padding: 6px 8px;">
+                    <datalist id="selectedStockItemList"></datalist>
+                    <button type="button" onclick="clearSelectedItemsStock()" class="dashboard-btn" style="font-size: 12px; padding: 6px 10px; background: var(--text-secondary);">Clear</button>
+                </div>
+                <div id="selectedStockChips" style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;"></div>
+                <div id="selectedStockTableWrap" style="display: none;">
+                    <table class="dashboard-table" style="font-size: 13px;">
+                        <thead>
+                            <tr>
+                                <th style="font-size: 12px;">CODE</th>
+                                <th class="text-right" style="font-size: 12px;">AVAILABLE QTY</th>
+                            </tr>
+                        </thead>
+                        <tbody id="selectedStockBody"></tbody>
+                        <tfoot>
+                            <tr>
+                                <td class="font-weight-600">TOTAL</td>
+                                <td class="text-right font-weight-600" id="selectedStockTotalQty">0.00</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
         </div>
         
         <!-- Compact Stats Cards in 2 columns -->
@@ -170,6 +202,176 @@
 // Get market base currency from template
 const marketBaseCurrency = '{{ market.base_currency if market else "CFA" }}';
 
+const SELECTED_STOCK_STORAGE_KEY = 'dashboardSelectedItems';
+let selectedStockItemIds = new Set();
+let selectedStockItemsCatalog = [];
+let selectedStockItemByKey = {};
+
+function fmtQty(n) {
+    return parseFloat(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function loadSelectedStockFromStorage() {
+    try {
+        const raw = localStorage.getItem(SELECTED_STOCK_STORAGE_KEY);
+        if (!raw) return;
+        const ids = JSON.parse(raw);
+        if (Array.isArray(ids)) {
+            selectedStockItemIds = new Set(ids.map(Number).filter(n => Number.isFinite(n) && n > 0));
+        }
+    } catch (e) {
+        console.warn('Could not restore selected items:', e);
+    }
+}
+
+function saveSelectedStockToStorage() {
+    localStorage.setItem(SELECTED_STOCK_STORAGE_KEY, JSON.stringify([...selectedStockItemIds]));
+}
+
+function itemPickerKey(code, name) {
+    return `${(code || '').trim()} — ${(name || '').trim()}`;
+}
+
+function renderSelectedStockChips() {
+    const container = document.getElementById('selectedStockChips');
+    if (!container) return;
+    if (selectedStockItemIds.size === 0) {
+        container.innerHTML = '';
+        return;
+    }
+    container.innerHTML = [...selectedStockItemIds].map(id => {
+        const meta = selectedStockItemsCatalog.find(i => i.id === id);
+        const label = meta ? meta.code : `#${id}`;
+        return `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; font-size: 11px;">
+            ${String(label).replace(/</g, '&lt;')}
+            <button type="button" onclick="removeSelectedStockItem(${id})" style="border: none; background: none; cursor: pointer; color: var(--text-secondary); font-size: 12px; line-height: 1; padding: 0;" title="Remove">&times;</button>
+        </span>`;
+    }).join('');
+}
+
+function rebuildSelectedStockDatalist() {
+    const datalist = document.getElementById('selectedStockItemList');
+    if (!datalist) return;
+    selectedStockItemByKey = {};
+    datalist.innerHTML = selectedStockItemsCatalog.map(item => {
+        const key = itemPickerKey(item.code, item.name);
+        selectedStockItemByKey[key] = item.id;
+        return `<option value="${key.replace(/"/g, '&quot;')}"></option>`;
+    }).join('');
+}
+
+function loadSelectedStockItemCatalog() {
+    return fetch('/api/items?include_all=1')
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                console.error(data.error);
+                selectedStockItemsCatalog = [];
+            } else {
+                selectedStockItemsCatalog = data;
+            }
+            rebuildSelectedStockDatalist();
+        })
+        .catch(err => {
+            console.error('Error loading items for picker:', err);
+            selectedStockItemsCatalog = [];
+            rebuildSelectedStockDatalist();
+        });
+}
+
+function addSelectedStockItemById(itemId) {
+    const id = parseInt(itemId, 10);
+    if (!Number.isFinite(id) || id <= 0) return false;
+    if (selectedStockItemIds.has(id)) return false;
+    selectedStockItemIds.add(id);
+    saveSelectedStockToStorage();
+    renderSelectedStockChips();
+    loadSelectedItemsStock();
+    return true;
+}
+
+function tryAddSelectedStockFromSearch() {
+    const input = document.getElementById('selectedStockItemSearch');
+    if (!input) return;
+    const val = (input.value || '').trim();
+    if (!val) return;
+
+    let itemId = selectedStockItemByKey[val];
+    if (!itemId) {
+        const lower = val.toLowerCase();
+        const match = selectedStockItemsCatalog.find(i =>
+            (i.code || '').toLowerCase() === lower ||
+            (i.name || '').toLowerCase() === lower ||
+            itemPickerKey(i.code, i.name).toLowerCase() === lower
+        );
+        if (match) itemId = match.id;
+    }
+    if (!itemId) return;
+
+    addSelectedStockItemById(itemId);
+    input.value = '';
+}
+
+function removeSelectedStockItem(itemId) {
+    selectedStockItemIds.delete(itemId);
+    saveSelectedStockToStorage();
+    renderSelectedStockChips();
+    if (selectedStockItemIds.size === 0) {
+        document.getElementById('selectedStockTableWrap').style.display = 'none';
+        document.getElementById('selectedStockBody').innerHTML = '';
+        document.getElementById('selectedStockTotalQty').textContent = '0.00';
+    } else {
+        loadSelectedItemsStock();
+    }
+}
+
+function clearSelectedItemsStock() {
+    selectedStockItemIds.clear();
+    saveSelectedStockToStorage();
+    renderSelectedStockChips();
+    document.getElementById('selectedStockItemSearch').value = '';
+    document.getElementById('selectedStockTableWrap').style.display = 'none';
+    document.getElementById('selectedStockBody').innerHTML = '';
+    document.getElementById('selectedStockTotalQty').textContent = '0.00';
+}
+
+function loadSelectedItemsStock() {
+    if (selectedStockItemIds.size === 0) {
+        document.getElementById('selectedStockTableWrap').style.display = 'none';
+        return;
+    }
+
+    const ids = [...selectedStockItemIds].join(',');
+
+    fetch(`/api/dashboard/selected-items-stock?item_ids=${encodeURIComponent(ids)}`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                console.error(data.error);
+                return;
+            }
+
+            const tbody = document.getElementById('selectedStockBody');
+            const items = data.items || [];
+
+            if (items.length === 0) {
+                document.getElementById('selectedStockTableWrap').style.display = 'none';
+                return;
+            }
+
+            tbody.innerHTML = items.map(item => `
+                <tr>
+                    <td class="font-weight-500">${(item.code || '').replace(/</g, '&lt;')}</td>
+                    <td class="text-right font-weight-600">${fmtQty(item.available_quantity)}</td>
+                </tr>
+            `).join('');
+
+            document.getElementById('selectedStockTotalQty').textContent = fmtQty(data.totals?.quantity || 0);
+            document.getElementById('selectedStockTableWrap').style.display = 'block';
+        })
+        .catch(err => console.error('Error loading selected items stock:', err));
+}
+
 function formatCurrency(amount, currency = null) {
     const curr = currency || marketBaseCurrency;
     const currUpper = curr.toUpperCase();
@@ -194,9 +396,16 @@ function formatDate(dateStr) {
     return `${day}-${month}-${year}`;
 }
 
+function amountToUsd(amount, rate) {
+    const r = parseFloat(rate);
+    if (!Number.isFinite(r) || r <= 0) return 0;
+    return amount / r;
+}
+
 function loadDailyReport() {
     const date = document.getElementById('dailyReportDate').value;
-    const rate = parseFloat(document.getElementById('dailyReportRate').value) || 750;
+    const rate = parseFloat(document.getElementById('dailyReportRate').value);
+    const rateForCalc = Number.isFinite(rate) && rate > 0 ? rate : 0;
     const realBalance = parseFloat(document.getElementById('dailyReportRealBalance').value) || 0;
     
     if (!date) {
@@ -213,7 +422,7 @@ function loadDailyReport() {
             }
             
             // Update rate display
-            document.getElementById('rateDisplay').textContent = rate;
+            document.getElementById('rateDisplay').textContent = rateForCalc;
             
             // Calculate previous date (1 day before report date)
             // Parse date string (YYYY-MM-DD) to avoid timezone issues
@@ -258,15 +467,15 @@ function loadDailyReport() {
                 differenceEuroCell.innerHTML = '<strong style="color: #4caf50;">Safe Matches</strong>';
             } else {
                 differenceCell.textContent = formatCurrency(difference, marketBaseCurrency);
-                differenceEuroCell.textContent = formatCurrency(difference / rate, 'USD');
+                differenceEuroCell.textContent = formatCurrency(amountToUsd(difference, rateForCalc), 'USD');
             }
             
             // Update USD column (divided by rate)
-            document.getElementById('balancePreviousDayEuro').textContent = formatCurrency(balancePreviousDay / rate, 'USD');
-            document.getElementById('totalSalesEuro').textContent = formatCurrency(totalSales / rate, 'USD');
-            document.getElementById('totalOutEuro').textContent = formatCurrency(totalOut / rate, 'USD');
-            document.getElementById('calculatedBalanceEuro').textContent = formatCurrency(calculatedBalance / rate, 'USD');
-            document.getElementById('realBalanceEuro').textContent = formatCurrency(realBalance / rate, 'USD');
+            document.getElementById('balancePreviousDayEuro').textContent = formatCurrency(amountToUsd(balancePreviousDay, rateForCalc), 'USD');
+            document.getElementById('totalSalesEuro').textContent = formatCurrency(amountToUsd(totalSales, rateForCalc), 'USD');
+            document.getElementById('totalOutEuro').textContent = formatCurrency(amountToUsd(totalOut, rateForCalc), 'USD');
+            document.getElementById('calculatedBalanceEuro').textContent = formatCurrency(amountToUsd(calculatedBalance, rateForCalc), 'USD');
+            document.getElementById('realBalanceEuro').textContent = formatCurrency(amountToUsd(realBalance, rateForCalc), 'USD');
             
             // Update supplier totals
             const supplierTotals = data.supplier_totals || [];
@@ -279,7 +488,7 @@ function loadDailyReport() {
                         <td class="font-weight-500">${supplier.supplier_name}</td>
                         <td class="text-right">${parseFloat(supplier.total_quantity).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
                         <td class="text-right font-weight-600">${formatCurrency(supplier.total_amount, marketBaseCurrency)}</td>
-                        <td class="text-right font-weight-600">${formatCurrency(supplier.total_amount / rate, 'USD')}</td>
+                        <td class="text-right font-weight-600">${formatCurrency(amountToUsd(supplier.total_amount, rateForCalc), 'USD')}</td>
                     </tr>
                 `).join('');
                 supplierTotalsSection.style.display = 'block';
@@ -308,23 +517,25 @@ function loadDailyReport() {
         });
 }
 
-// Function to load real balance from Safe Statement
-function loadRealBalanceFromSafeStatement(date) {
-    if (!date) return;
-    
-    fetch(`/api/reports/safe-statement/real-balance?date=${date}`)
+/** Load Real Balance and Currency Rate from Safe Statement for the selected date. */
+function loadSafeStatementOverridesForDate(date) {
+    if (!date) return Promise.resolve();
+    return fetch(`/api/reports/safe-statement/real-balance?date=${encodeURIComponent(date)}`)
         .then(response => response.json())
         .then(data => {
+            if (data.error) return;
             if (data.real_balance !== null && data.real_balance !== undefined) {
                 document.getElementById('dailyReportRealBalance').value = data.real_balance;
-                // If report is already loaded, update it
-                if (document.getElementById('dailyReportTable').style.display === 'block') {
-                    loadDailyReport();
-                }
+            }
+            const rateEl = document.getElementById('dailyReportRate');
+            if (data.currency_rate !== null && data.currency_rate !== undefined) {
+                rateEl.value = data.currency_rate;
+            } else {
+                rateEl.value = '0';
             }
         })
         .catch(error => {
-            console.error('Error loading real balance:', error);
+            console.error('Error loading safe statement overrides:', error);
         });
 }
 
@@ -371,32 +582,51 @@ function loadStockBySupplier() {
 
 // Auto-update when real balance changes
 document.addEventListener('DOMContentLoaded', function() {
-    // Set default date to today
-    const today = new Date().toISOString().split('T')[0];
+    // Default date: previous local calendar day (typical for closing / review)
+    const y = new Date();
+    y.setDate(y.getDate() - 1);
+    const defaultDailyDate = [y.getFullYear(), String(y.getMonth() + 1).padStart(2, '0'), String(y.getDate()).padStart(2, '0')].join('-');
     const dateInput = document.getElementById('dailyReportDate');
     if (dateInput) {
-        dateInput.value = today;
-        // Load real balance for today's date
-        loadRealBalanceFromSafeStatement(today);
+        dateInput.value = defaultDailyDate;
     }
     
-    // Auto-generate report on page load
-    setTimeout(function() {
-        if (dateInput.value) {
+    // Load Safe Statement overrides then generate report
+    if (dateInput && dateInput.value) {
+        loadSafeStatementOverridesForDate(dateInput.value).then(function() {
             loadDailyReport();
-        }
-    }, 500);
+        });
+    }
     
     // Load stock by supplier on page load
     loadStockBySupplier();
+
+    // Selected items stock (under Stock by Supplier)
+    loadSelectedStockFromStorage();
+    loadSelectedStockItemCatalog().then(function() {
+        renderSelectedStockChips();
+        if (selectedStockItemIds.size > 0) {
+            loadSelectedItemsStock();
+        }
+    });
+
+    const selectedStockSearch = document.getElementById('selectedStockItemSearch');
+    if (selectedStockSearch) {
+        selectedStockSearch.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                tryAddSelectedStockFromSearch();
+            }
+        });
+        selectedStockSearch.addEventListener('change', function() {
+            tryAddSelectedStockFromSearch();
+        });
+    }
     
-    // Auto-load real balance when date changes
     dateInput.addEventListener('change', function() {
-        loadRealBalanceFromSafeStatement(this.value);
-        // Auto-generate report when date changes
-        setTimeout(function() {
+        loadSafeStatementOverridesForDate(this.value).then(function() {
             loadDailyReport();
-        }, 300);
+        });
     });
     
     const realBalanceInput = document.getElementById('dailyReportRealBalance');

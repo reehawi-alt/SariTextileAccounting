@@ -57,6 +57,10 @@
                     <span class="menu-icon">💰</span>
                     <span>Sales</span>
                 </a></li>
+                <li><a href="{{ url_for('fast_sell_page') }}" class="menu-item {% if request.endpoint == 'fast_sell_page' %}active{% endif %}">
+                    <span class="menu-icon">⚡</span>
+                    <span>Fast Sell</span>
+                </a></li>
                 <li><a href="{{ url_for('payments_page') }}" class="menu-item {% if request.endpoint == 'payments_page' %}active{% endif %}">
                     <span class="menu-icon">💳</span>
                     <span>Payments</span>
@@ -73,6 +77,10 @@
                     <span class="menu-icon">⚙️</span>
                     <span>Administration</span>
                 </a></li>
+                <li><a href="{{ url_for('partners_page') }}" class="menu-item {% if request.endpoint == 'partners_page' %}active{% endif %}">
+                    <span class="menu-icon">🤝</span>
+                    <span>Partners</span>
+                </a></li>
                 <li><a href="{{ url_for('switch_market_page') }}" class="menu-item {% if request.endpoint == 'switch_market_page' %}active{% endif %}">
                     <span class="menu-icon">🔄</span>
                     <span>Switch Market</span>
@@ -80,6 +88,14 @@
                 <li><a href="{{ url_for('currencies_page') }}" class="menu-item {% if request.endpoint == 'currencies_page' %}active{% endif %}">
                     <span class="menu-icon">💵</span>
                     <span>Currencies</span>
+                </a></li>
+                <li><a href="{{ url_for('market_notes_page') }}" class="menu-item {% if request.endpoint == 'market_notes_page' %}active{% endif %}">
+                    <span class="menu-icon">📝</span>
+                    <span>Market Notes</span>
+                </a></li>
+                <li><a href="{{ url_for('supplier_returns_page') }}" class="menu-item {% if request.endpoint == 'supplier_returns_page' %}active{% endif %}">
+                    <span class="menu-icon">↩️</span>
+                    <span>Supplier Returns</span>
                 </a></li>
             </ul>
         </aside>

@@ -4,14 +4,36 @@ Main Flask application for Multi-Market Used Clothes Wholesale Accounting System
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User, Market, Company, Item, PurchaseContainer, PurchaseItem, Sale, SaleItem, Payment, SafeTransaction, GeneralExpense, SafeStatementRealBalance, InventoryAdjustment, InventoryBatch, SaleItemAllocation
+from models import db, User, Market, MarketStickyNote, MarketPartner, PartnerDrawing, PurchasingRepresentative, Company, Item, PurchaseContainer, PurchaseItem, Sale, SaleItem, Payment, SafeTransaction, GeneralExpense, SafeStatementRealBalance, InventoryAdjustment, InventoryBatch, SaleItemAllocation, SupplierReturn, SupplierReturnLine, SupplierReturnAllocation
 from datetime import datetime, timedelta
 import json
+import os
+
+def _sqlalchemy_database_uri():
+    """Local: SQLite. Live (Render): PostgreSQL only — never fall back to a wipeable file."""
+    url = os.environ.get('DATABASE_URL')
+    if os.environ.get('RENDER') and not url:
+        raise RuntimeError(
+            'DATABASE_URL is not set on Render. Refusing to start with SQLite '
+            '(that disk is wiped when the service sleeps or restarts). '
+            'Create a PostgreSQL database and attach it as DATABASE_URL.'
+        )
+    if not url:
+        return 'sqlite:///accounting.db'
+    if url.startswith('postgres://'):
+        url = 'postgresql://' + url[len('postgres://'):]
+    return url
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = __import__('os').environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
-app.config['SQLALCHEMY_DATABASE_URI'] = __import__('os').environ.get('DATABASE_URL', 'sqlite:///accounting.db').replace('postgres://', 'postgresql://')  # Render uses postgres://
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
+_DB_URI = _sqlalchemy_database_uri()
+app.config['SQLALCHEMY_DATABASE_URI'] = _DB_URI
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+if _DB_URI.startswith('postgresql'):
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_pre_ping': True,
+        'pool_recycle': 280,
+    }
 
 db.init_app(app)
 
@@ -26,6 +48,158 @@ def load_user(user_id):
 # Initialize database
 with app.app_context():
     db.create_all()
+    # Add markets.notes column if missing (existing SQLite/Postgres DBs)
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        market_cols = [c['name'] for c in inspector.get_columns('markets')]
+        if 'notes' not in market_cols:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text('ALTER TABLE markets ADD COLUMN IF NOT EXISTS notes TEXT'))
+            else:
+                db.session.execute(text('ALTER TABLE markets ADD COLUMN notes TEXT'))
+            db.session.commit()
+            market_cols = [c['name'] for c in inspector.get_columns('markets')]
+        if 'is_active' not in market_cols:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text(
+                    'ALTER TABLE markets ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE'
+                ))
+            else:
+                db.session.execute(text(
+                    'ALTER TABLE markets ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1'
+                ))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+    # Add safe_statement_real_balances.currency_rate if missing
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        ss_cols = [c['name'] for c in inspector.get_columns('safe_statement_real_balances')]
+        if 'currency_rate' not in ss_cols:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text(
+                    'ALTER TABLE safe_statement_real_balances ADD COLUMN IF NOT EXISTS currency_rate NUMERIC(12, 4)'
+                ))
+            else:
+                db.session.execute(text(
+                    'ALTER TABLE safe_statement_real_balances ADD COLUMN currency_rate NUMERIC(12, 4)'
+                ))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+    # safe_transactions.partner_drawing_id (partner cash drawings)
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        st_cols = [c['name'] for c in inspector.get_columns('safe_transactions')]
+        if 'partner_drawing_id' not in st_cols:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text(
+                    'ALTER TABLE safe_transactions ADD COLUMN IF NOT EXISTS partner_drawing_id INTEGER REFERENCES partner_drawings(id)'
+                ))
+            else:
+                db.session.execute(text(
+                    'ALTER TABLE safe_transactions ADD COLUMN partner_drawing_id INTEGER REFERENCES partner_drawings(id)'
+                ))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+    # sale_items: line_description + nullable item_id (fast sell)
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        si_cols = {c['name']: c for c in inspector.get_columns('sale_items')}
+        if 'line_description' not in si_cols:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text(
+                    'ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS line_description TEXT'
+                ))
+            else:
+                db.session.execute(text('ALTER TABLE sale_items ADD COLUMN line_description TEXT'))
+            db.session.commit()
+            si_cols = {c['name']: c for c in inspector.get_columns('sale_items')}
+        item_id_info = si_cols.get('item_id')
+        if item_id_info and item_id_info.get('nullable') is False:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text('ALTER TABLE sale_items ALTER COLUMN item_id DROP NOT NULL'))
+                db.session.commit()
+            else:
+                # SQLite: recreate table to drop NOT NULL on item_id (preserve ids for FK e.g. sale_item_allocations)
+                db.session.execute(text('PRAGMA foreign_keys=OFF'))
+                db.session.execute(text(
+                    'CREATE TABLE sale_items_new ('
+                    'id INTEGER NOT NULL PRIMARY KEY,'
+                    'sale_id INTEGER NOT NULL REFERENCES sales(id),'
+                    'item_id INTEGER REFERENCES items(id),'
+                    'line_description TEXT,'
+                    'quantity NUMERIC(10,2) NOT NULL,'
+                    'unit_price NUMERIC(10,2) NOT NULL,'
+                    'total_price NUMERIC(10,2) NOT NULL)'
+                ))
+                db.session.execute(text(
+                    'INSERT INTO sale_items_new (id, sale_id, item_id, line_description, quantity, unit_price, total_price) '
+                    'SELECT id, sale_id, item_id, line_description, quantity, unit_price, total_price FROM sale_items'
+                ))
+                db.session.execute(text('DROP TABLE sale_items'))
+                db.session.execute(text('ALTER TABLE sale_items_new RENAME TO sale_items'))
+                db.session.execute(text('PRAGMA foreign_keys=ON'))
+                db.session.commit()
+    except Exception:
+        db.session.rollback()
+    # purchase_containers.representative_id (optional purchasing representative tag)
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        pc_cols = [c['name'] for c in inspector.get_columns('purchase_containers')]
+        if 'representative_id' not in pc_cols:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text(
+                    'ALTER TABLE purchase_containers ADD COLUMN IF NOT EXISTS representative_id INTEGER REFERENCES purchasing_representatives(id)'
+                ))
+            else:
+                db.session.execute(text(
+                    'ALTER TABLE purchase_containers ADD COLUMN representative_id INTEGER REFERENCES purchasing_representatives(id)'
+                ))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+    # payments.purchase_container_id (auto cash payment for representative purchases)
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        pay_cols = [c['name'] for c in inspector.get_columns('payments')]
+        if 'purchase_container_id' not in pay_cols:
+            if db.engine.dialect.name == 'postgresql':
+                db.session.execute(text(
+                    'ALTER TABLE payments ADD COLUMN IF NOT EXISTS purchase_container_id INTEGER REFERENCES purchase_containers(id)'
+                ))
+            else:
+                db.session.execute(text(
+                    'ALTER TABLE payments ADD COLUMN purchase_container_id INTEGER REFERENCES purchase_containers(id)'
+                ))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+    # payments.proof_filename / proof_original_filename (payment proof attachments)
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        pay_cols = [c['name'] for c in inspector.get_columns('payments')]
+        for col_name in ('proof_filename', 'proof_original_filename'):
+            if col_name not in pay_cols:
+                if db.engine.dialect.name == 'postgresql':
+                    db.session.execute(text(
+                        f'ALTER TABLE payments ADD COLUMN IF NOT EXISTS {col_name} VARCHAR(255)'
+                    ))
+                else:
+                    db.session.execute(text(
+                        f'ALTER TABLE payments ADD COLUMN {col_name} VARCHAR(255)'
+                    ))
+                db.session.commit()
+    except Exception:
+        db.session.rollback()
     # Create default admin user if not exists
     if not User.query.filter_by(username='admin').first():
         admin = User(
@@ -127,15 +301,21 @@ def markets():
             'id': market.id,
             'name': market.name,
             'address': market.address,
-            'base_currency': market.base_currency
+            'base_currency': market.base_currency,
+            'is_active': bool(market.is_active),
         }), 201
     
-    markets = Market.query.all()
+    active_only = request.args.get('active_only', 'false').lower() in ('1', 'true', 'yes')
+    q = Market.query
+    if active_only:
+        q = q.filter_by(is_active=True)
+    markets = q.order_by(Market.name.asc()).all()
     return jsonify([{
         'id': m.id,
         'name': m.name,
         'address': m.address,
-        'base_currency': m.base_currency
+        'base_currency': m.base_currency,
+        'is_active': bool(m.is_active),
     } for m in markets])
 
 @app.route('/api/markets/<int:market_id>', methods=['GET', 'PUT', 'DELETE'])
@@ -167,20 +347,94 @@ def market_detail(market_id):
         market.name = data.get('name', market.name)
         market.address = data.get('address', market.address)
         market.base_currency = data.get('base_currency', market.base_currency)
+        if 'notes' in data:
+            market.notes = data.get('notes') or None
+        if 'is_active' in data:
+            market.is_active = bool(data.get('is_active'))
         db.session.commit()
         return jsonify({
             'id': market.id,
             'name': market.name,
             'address': market.address,
-            'base_currency': market.base_currency
+            'base_currency': market.base_currency,
+            'notes': market.notes or '',
+            'is_active': bool(market.is_active),
         })
     
     return jsonify({
         'id': market.id,
         'name': market.name,
         'address': market.address,
-        'base_currency': market.base_currency
+        'base_currency': market.base_currency,
+        'notes': getattr(market, 'notes', None) or '',
+        'is_active': bool(getattr(market, 'is_active', True)),
     })
+
+@app.route('/api/markets/<int:market_id>/clone', methods=['POST'])
+@login_required
+def clone_market(market_id):
+    """Clone a market with its companies and items. Does not copy purchases, sales, payments, etc."""
+    source = Market.query.get(market_id)
+    if not source:
+        return jsonify({'error': 'Market not found'}), 404
+
+    # Create new market (user will rename)
+    new_market = Market(
+        name=f'{source.name} (Copy)',
+        address=source.address or '',
+        base_currency=source.base_currency,
+        calculation_method=getattr(source, 'calculation_method', 'Average') or 'Average'
+    )
+    db.session.add(new_market)
+    db.session.flush()
+
+    # Map old company id -> new company
+    company_map = {}
+    for old_company in Company.query.filter_by(market_id=market_id).all():
+        new_company = Company(
+            market_id=new_market.id,
+            name=old_company.name,
+            address=old_company.address or '',
+            category=old_company.category,
+            payment_type=old_company.payment_type,
+            currency=old_company.currency
+        )
+        db.session.add(new_company)
+        db.session.flush()
+        company_map[old_company.id] = new_company.id
+
+    # Clone items with remapped supplier_id
+    for old_item in Item.query.filter_by(market_id=market_id).all():
+        new_supplier_id = company_map.get(old_item.supplier_id) if old_item.supplier_id else None
+        new_item = Item(
+            market_id=new_market.id,
+            supplier_id=new_supplier_id,
+            code=old_item.code,
+            name=old_item.name,
+            weight=old_item.weight,
+            grade=old_item.grade,
+            category1=old_item.category1,
+            category2=old_item.category2
+        )
+        db.session.add(new_item)
+
+    for sn in MarketStickyNote.query.filter_by(market_id=market_id).order_by(
+        MarketStickyNote.sort_order, MarketStickyNote.id
+    ).all():
+        db.session.add(MarketStickyNote(
+            market_id=new_market.id,
+            body=sn.body or '',
+            tint=sn.tint or 0,
+            sort_order=sn.sort_order
+        ))
+
+    db.session.commit()
+    return jsonify({
+        'id': new_market.id,
+        'name': new_market.name,
+        'address': new_market.address,
+        'base_currency': new_market.base_currency
+    }), 201
 
 @app.route('/api/current-market', methods=['GET'])
 @login_required
@@ -194,7 +448,8 @@ def get_current_market():
                 'id': market.id,
                 'name': market.name,
                 'address': market.address,
-                'base_currency': market.base_currency
+                'base_currency': market.base_currency,
+                'notes': getattr(market, 'notes', None) or ''
             })
     # Return first market if no current market set
     market = Market.query.first()
@@ -204,42 +459,182 @@ def get_current_market():
             'id': market.id,
             'name': market.name,
             'address': market.address,
-            'base_currency': market.base_currency
+            'base_currency': market.base_currency,
+            'notes': getattr(market, 'notes', None) or ''
         })
     return jsonify({'error': 'No market available'}), 404
+
+@app.route('/api/current-market/notes', methods=['PUT'])
+@login_required
+def update_current_market_notes():
+    """Update legacy single-field notes for the currently selected market."""
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+    market = Market.query.get(market_id)
+    if not market:
+        return jsonify({'error': 'Market not found'}), 404
+    data = request.json or {}
+    text_val = data.get('notes')
+    if text_val is None:
+        text_val = ''
+    market.notes = text_val if str(text_val).strip() else None
+    db.session.commit()
+    return jsonify({'notes': market.notes or ''})
+
+
+def _migrate_legacy_sticky_notes(market_id):
+    """If market has legacy Market.notes and no cards, import as first sticky."""
+    market = Market.query.get(market_id)
+    if not market:
+        return
+    if MarketStickyNote.query.filter_by(market_id=market_id).first():
+        return
+    legacy = (market.notes or '').strip()
+    if not legacy:
+        return
+    db.session.add(MarketStickyNote(market_id=market_id, body=legacy, tint=0, sort_order=0))
+    db.session.commit()
+
+
+@app.route('/api/current-market/sticky-notes', methods=['GET'])
+@login_required
+def list_current_market_sticky_notes():
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+    market = Market.query.get(market_id)
+    if not market:
+        return jsonify({'error': 'Market not found'}), 404
+    _migrate_legacy_sticky_notes(market_id)
+    notes = MarketStickyNote.query.filter_by(market_id=market_id).order_by(
+        MarketStickyNote.sort_order, MarketStickyNote.id
+    ).all()
+    return jsonify({
+        'market_name': market.name,
+        'notes': [{
+            'id': n.id,
+            'body': n.body or '',
+            'tint': n.tint or 0,
+            'sort_order': n.sort_order
+        } for n in notes]
+    })
+
+
+@app.route('/api/current-market/sticky-notes', methods=['POST'])
+@login_required
+def create_current_market_sticky_note():
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+    if not Market.query.get(market_id):
+        return jsonify({'error': 'Market not found'}), 404
+    _migrate_legacy_sticky_notes(market_id)
+    data = request.json or {}
+    body = data.get('body', '') or ''
+    tint = data.get('tint')
+    existing = MarketStickyNote.query.filter_by(market_id=market_id).all()
+    try:
+        tint = int(tint) if tint is not None else (len(existing) % 6)
+    except (TypeError, ValueError):
+        tint = 0
+    tint = max(0, min(5, tint))
+    mx = max((n.sort_order for n in existing), default=0)
+    n = MarketStickyNote(market_id=market_id, body=str(body)[:50000], tint=tint, sort_order=int(mx) + 1)
+    db.session.add(n)
+    db.session.commit()
+    return jsonify({
+        'id': n.id,
+        'body': n.body,
+        'tint': n.tint,
+        'sort_order': n.sort_order
+    }), 201
+
+
+@app.route('/api/current-market/sticky-notes/<int:note_id>', methods=['PUT'])
+@login_required
+def update_current_market_sticky_note(note_id):
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+    n = MarketStickyNote.query.filter_by(id=note_id, market_id=market_id).first()
+    if not n:
+        return jsonify({'error': 'Note not found'}), 404
+    data = request.json or {}
+    if 'body' in data:
+        n.body = str(data.get('body') or '')[:50000]
+    if 'tint' in data:
+        try:
+            n.tint = max(0, min(5, int(data.get('tint'))))
+        except (TypeError, ValueError):
+            pass
+    db.session.commit()
+    return jsonify({
+        'id': n.id,
+        'body': n.body,
+        'tint': n.tint,
+        'sort_order': n.sort_order
+    })
+
+
+@app.route('/api/current-market/sticky-notes/<int:note_id>', methods=['DELETE'])
+@login_required
+def delete_current_market_sticky_note(note_id):
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+    n = MarketStickyNote.query.filter_by(id=note_id, market_id=market_id).first()
+    if not n:
+        return jsonify({'error': 'Note not found'}), 404
+    db.session.delete(n)
+    db.session.commit()
+    return jsonify({'success': True})
 
 @app.route('/api/import-data', methods=['POST'])
 @login_required
 def import_data():
-    """Import data from local export (JSON). Replaces all data except users."""
+    """Import data from local export (JSON). Replaces all data except users. Supports chunked import via replace=false."""
     from decimal import Decimal
     try:
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
+        replace = data.get('_replace', True)  # Default True for backward compatibility
+        if not replace:
+            data = {k: v for k, v in data.items() if not k.startswith('_')}
+        
         # Tables in delete order (children first)
         delete_order = [
-            SaleItemAllocation, InventoryBatch, InventoryAdjustment, SafeStatementRealBalance,
-            SafeTransaction, GeneralExpense, Payment, SaleItem, Sale, PurchaseItem,
-            PurchaseContainer, Item, Company, Market
+            SupplierReturnAllocation, SaleItemAllocation, SupplierReturnLine, InventoryBatch,
+            InventoryAdjustment, SafeStatementRealBalance, SafeTransaction, PartnerDrawing,
+            GeneralExpense, Payment, SaleItem, Sale, PurchaseItem, PurchaseContainer,
+            SupplierReturn, Item, Company, MarketStickyNote, MarketPartner,
+            PurchasingRepresentative, Market
         ]
         # Tables in insert order (parents first)
         table_config = [
-            ('markets', Market, ['id', 'name', 'address', 'base_currency', 'calculation_method', 'created_at']),
+            ('markets', Market, ['id', 'name', 'address', 'base_currency', 'calculation_method', 'notes', 'is_active', 'created_at']),
+            ('market_sticky_notes', MarketStickyNote, ['id', 'market_id', 'body', 'tint', 'sort_order', 'created_at', 'updated_at']),
+            ('market_partners', MarketPartner, ['id', 'market_id', 'name', 'share_percent', 'created_at', 'updated_at']),
+            ('partner_drawings', PartnerDrawing, ['id', 'market_id', 'partner_id', 'date', 'description', 'amount', 'currency', 'exchange_rate', 'created_at']),
+            ('purchasing_representatives', PurchasingRepresentative, ['id', 'market_id', 'name', 'is_active', 'created_at', 'updated_at']),
             ('companies', Company, ['id', 'market_id', 'name', 'address', 'category', 'payment_type', 'currency', 'created_at']),
             ('items', Item, ['id', 'market_id', 'supplier_id', 'code', 'name', 'weight', 'grade', 'category1', 'category2', 'created_at']),
-            ('purchase_containers', PurchaseContainer, ['id', 'market_id', 'container_number', 'supplier_id', 'currency', 'exchange_rate', 'date', 'notes', 'expense1_amount', 'expense1_currency', 'expense1_exchange_rate', 'expense2_amount', 'expense2_service_company_id', 'expense2_currency', 'expense2_exchange_rate', 'expense3_amount', 'expense3_currency', 'expense3_exchange_rate', 'created_at']),
+            ('supplier_returns', SupplierReturn, ['id', 'market_id', 'supplier_id', 'date', 'reference_number', 'currency', 'exchange_rate', 'notes', 'created_at']),
+            ('supplier_return_lines', SupplierReturnLine, ['id', 'supplier_return_id', 'item_id', 'quantity', 'unit_price', 'total_price']),
+            ('purchase_containers', PurchaseContainer, ['id', 'market_id', 'container_number', 'supplier_id', 'representative_id', 'currency', 'exchange_rate', 'date', 'notes', 'expense1_amount', 'expense1_currency', 'expense1_exchange_rate', 'expense2_amount', 'expense2_service_company_id', 'expense2_currency', 'expense2_exchange_rate', 'expense3_amount', 'expense3_currency', 'expense3_exchange_rate', 'created_at']),
             ('purchase_items', PurchaseItem, ['id', 'container_id', 'item_id', 'quantity', 'unit_price', 'total_price']),
             ('sales', Sale, ['id', 'market_id', 'invoice_number', 'customer_id', 'supplier_id', 'date', 'total_amount', 'paid_amount', 'balance', 'payment_type', 'status', 'notes', 'created_at']),
-            ('sale_items', SaleItem, ['id', 'sale_id', 'item_id', 'quantity', 'unit_price', 'total_price']),
-            ('payments', Payment, ['id', 'market_id', 'company_id', 'sale_id', 'payment_type', 'amount', 'currency', 'exchange_rate', 'amount_base_currency_stored', 'date', 'notes', 'loan', 'created_at']),
+            ('sale_items', SaleItem, ['id', 'sale_id', 'item_id', 'line_description', 'quantity', 'unit_price', 'total_price']),
+            ('payments', Payment, ['id', 'market_id', 'company_id', 'sale_id', 'purchase_container_id', 'payment_type', 'amount', 'currency', 'exchange_rate', 'amount_base_currency_stored', 'date', 'notes', 'loan', 'created_at']),
             ('general_expenses', GeneralExpense, ['id', 'market_id', 'date', 'description', 'category', 'amount', 'currency', 'exchange_rate', 'created_at']),
-            ('safe_transactions', SafeTransaction, ['id', 'market_id', 'transaction_type', 'amount', 'currency', 'exchange_rate', 'amount_base_currency_stored', 'date', 'description', 'payment_id', 'sale_id', 'general_expense_id', 'balance_after', 'created_at']),
-            ('safe_statement_real_balances', SafeStatementRealBalance, ['id', 'market_id', 'date', 'real_balance', 'created_at', 'updated_at']),
+            ('safe_transactions', SafeTransaction, ['id', 'market_id', 'transaction_type', 'amount', 'currency', 'exchange_rate', 'amount_base_currency_stored', 'date', 'description', 'payment_id', 'sale_id', 'general_expense_id', 'partner_drawing_id', 'balance_after', 'created_at']),
+            ('safe_statement_real_balances', SafeStatementRealBalance, ['id', 'market_id', 'date', 'real_balance', 'currency_rate', 'created_at', 'updated_at']),
             ('inventory_adjustments', InventoryAdjustment, ['id', 'market_id', 'item_id', 'adjustment_type', 'quantity', 'date', 'reason', 'notes', 'created_at', 'updated_at']),
             ('inventory_batches', InventoryBatch, ['id', 'market_id', 'item_id', 'purchase_item_id', 'container_id', 'purchase_date', 'original_quantity', 'available_quantity', 'unit_price', 'cog_per_unit', 'cost_per_unit', 'currency', 'exchange_rate', 'created_at']),
             ('sale_item_allocations', SaleItemAllocation, ['id', 'sale_item_id', 'batch_id', 'quantity', 'cost_per_unit', 'total_cost', 'created_at']),
+            ('supplier_return_allocations', SupplierReturnAllocation, ['id', 'supplier_return_line_id', 'batch_id', 'quantity']),
         ]
         
         def to_py(val):
@@ -247,17 +642,26 @@ def import_data():
             if isinstance(val, str) and val.endswith('Z'): val = val.replace('Z', '+00:00')
             return val
         
-        # Delete existing data
-        for model in delete_order:
-            model.query.delete()
-        db.session.commit()
-        
-        # Reset sequences for SQLite (so new IDs don't conflict) - skip on PostgreSQL
-        try:
-            db.session.execute(db.text("DELETE FROM sqlite_sequence WHERE name IN ('markets','companies','items','purchase_containers','purchase_items','sales','sale_items','payments','general_expenses','safe_transactions','safe_statement_real_balances','inventory_adjustments','inventory_batches','sale_item_allocations')"))
+        if replace:
+            # Delete existing data
+            for model in delete_order:
+                model.query.delete()
             db.session.commit()
-        except Exception:
-            pass  # PostgreSQL doesn't have sqlite_sequence
+            # Reset SQLite autoincrement so imported IDs can be reused
+            if db.engine.dialect.name != 'postgresql':
+                try:
+                    db.session.execute(db.text(
+                        "DELETE FROM sqlite_sequence WHERE name IN ("
+                        "'markets','market_sticky_notes','market_partners','partner_drawings',"
+                        "'purchasing_representatives','companies','items','supplier_returns',"
+                        "'supplier_return_lines','purchase_containers','purchase_items','sales',"
+                        "'sale_items','payments','general_expenses','safe_transactions',"
+                        "'safe_statement_real_balances','inventory_adjustments','inventory_batches',"
+                        "'sale_item_allocations','supplier_return_allocations')"
+                    ))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
         
         total = 0
         for table_name, model, columns in table_config:
@@ -285,6 +689,25 @@ def import_data():
                     db.session.rollback()
                     return jsonify({'error': f'Import failed at {table_name}: {str(e)}'}), 400
         db.session.commit()
+
+        # PostgreSQL keeps its own ID counters; after importing explicit IDs they must
+        # be advanced or the next new invoice/item can fail with a duplicate-key error.
+        if db.engine.dialect.name == 'postgresql':
+            pg_tables = (
+                'markets', 'market_sticky_notes', 'market_partners', 'partner_drawings',
+                'purchasing_representatives', 'companies', 'items', 'supplier_returns',
+                'supplier_return_lines', 'purchase_containers', 'purchase_items', 'sales',
+                'sale_items', 'payments', 'general_expenses', 'safe_transactions',
+                'safe_statement_real_balances', 'inventory_adjustments', 'inventory_batches',
+                'sale_item_allocations', 'supplier_return_allocations',
+            )
+            for table in pg_tables:
+                db.session.execute(db.text(
+                    f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                    f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
+                    f"(SELECT COUNT(*) FROM {table}) > 0)"
+                ))
+            db.session.commit()
         
         # Set session to first market
         market = Market.query.first()
@@ -425,7 +848,7 @@ def recalculate_fifo_allocations():
         }), 500
 
 # Import all API routes
-from api import companies, items, purchases, sales, payments, reports, safe, expenses, inventory
+from api import companies, items, purchases, sales, payments, reports, safe, expenses, inventory, partners, supplier_returns, representatives
 
 app.register_blueprint(companies.bp, url_prefix='/api/companies')
 app.register_blueprint(items.bp, url_prefix='/api/items')
@@ -436,6 +859,9 @@ app.register_blueprint(reports.bp, url_prefix='/api/reports')
 app.register_blueprint(safe.bp, url_prefix='/api/safe')
 app.register_blueprint(expenses.bp, url_prefix='/api/expenses')
 app.register_blueprint(inventory.bp, url_prefix='/api/inventory')
+app.register_blueprint(partners.bp, url_prefix='/api/partners')
+app.register_blueprint(supplier_returns.bp, url_prefix='/api/supplier-returns')
+app.register_blueprint(representatives.bp, url_prefix='/api/representatives')
 
 # Frontend routes
 @app.route('/companies')
@@ -458,10 +884,20 @@ def items_page():
 def purchases_page():
     return render_template('purchases.html')
 
+@app.route('/supplier-returns')
+@login_required
+def supplier_returns_page():
+    return render_template('supplier_returns.html')
+
 @app.route('/sales')
 @login_required
 def sales_page():
     return render_template('sales.html')
+
+@app.route('/fast-sell')
+@login_required
+def fast_sell_page():
+    return render_template('fast_sell.html')
 
 @app.route('/payments')
 @login_required
@@ -498,9 +934,19 @@ def switch_market_page():
 def currencies_page():
     return render_template('currencies.html')
 
+@app.route('/market-notes')
+@login_required
+def market_notes_page():
+    return render_template('market_notes.html')
+
+@app.route('/partners')
+@login_required
+def partners_page():
+    return render_template('partners.html')
+
 def get_dashboard_stats(market_id):
     """Calculate dashboard statistics"""
-    from models import Company, Sale, PurchaseContainer, SafeTransaction, SaleItem, PurchaseItem, Item
+    from models import Company, Sale, PurchaseContainer, SafeTransaction, SaleItem, PurchaseItem, Item, SupplierReturn, SupplierReturnLine
     from decimal import Decimal
     from sqlalchemy import func
     
@@ -616,12 +1062,22 @@ def get_dashboard_stats(market_id):
         SaleItem.item_id.in_(item_ids) if item_ids else True
     ).group_by(SaleItem.item_id).all())
     
+    # Get supplier returns per item (reduces on-hand like sales)
+    return_totals = dict(db.session.query(
+        SupplierReturnLine.item_id,
+        func.coalesce(func.sum(SupplierReturnLine.quantity), 0)
+    ).join(SupplierReturn, SupplierReturnLine.supplier_return_id == SupplierReturn.id).filter(
+        SupplierReturn.market_id == market_id,
+        SupplierReturnLine.item_id.in_(item_ids) if item_ids else True
+    ).group_by(SupplierReturnLine.item_id).all())
+    
     # Calculate total available stock
     total_stock = Decimal('0')
     for item_id in item_ids:
         purchases_qty = Decimal(str(purchase_totals.get(item_id, 0)))
         sales_qty = Decimal(str(sale_totals.get(item_id, 0)))
-        total_stock += purchases_qty - sales_qty
+        returns_qty = Decimal(str(return_totals.get(item_id, 0)))
+        total_stock += purchases_qty - sales_qty - returns_qty
     
     return {
         'safe_balance': safe_balance_amount,
@@ -637,7 +1093,7 @@ def get_dashboard_stats(market_id):
 @login_required
 def get_stock_by_supplier():
     """Get available stock grouped by supplier with quantity, weight, and stock value in original currency"""
-    from models import Company, Item, PurchaseItem, SaleItem, PurchaseContainer, Sale, InventoryAdjustment
+    from models import Company, Item, PurchaseItem, SaleItem, PurchaseContainer, Sale, InventoryAdjustment, SupplierReturn, SupplierReturnLine
     from decimal import Decimal
     from sqlalchemy import func, case
     
@@ -677,6 +1133,14 @@ def get_stock_by_supplier():
             Sale.market_id == market_id,
             SaleItem.item_id.in_(item_ids)
         ).group_by(SaleItem.item_id).all())
+        
+        return_totals = dict(db.session.query(
+            SupplierReturnLine.item_id,
+            func.coalesce(func.sum(SupplierReturnLine.quantity), 0)
+        ).join(SupplierReturn, SupplierReturnLine.supplier_return_id == SupplierReturn.id).filter(
+            SupplierReturn.market_id == market_id,
+            SupplierReturnLine.item_id.in_(item_ids)
+        ).group_by(SupplierReturnLine.item_id).all())
         
         # Get inventory adjustments per item (affects available quantity but NOT COG)
         adjustments_map = {}
@@ -815,8 +1279,9 @@ def get_stock_by_supplier():
         for item in items:
             purchases_qty = Decimal(str(purchase_totals.get(item.id, 0)))
             sales_qty = Decimal(str(sale_totals.get(item.id, 0)))
+            returns_qty = Decimal(str(return_totals.get(item.id, 0)))
             adjustment_qty = Decimal(str(adjustments_map.get(item.id, 0)))
-            available_qty = purchases_qty - sales_qty + adjustment_qty
+            available_qty = purchases_qty - sales_qty - returns_qty + adjustment_qty
             
             # Include all items, even with negative or zero stock
             supplier_quantity += available_qty
@@ -852,6 +1317,73 @@ def get_stock_by_supplier():
             'quantity': float(total_quantity),
             'weight': float(total_weight)
         }
+    })
+
+@app.route('/api/dashboard/selected-items-stock', methods=['GET'])
+@login_required
+def get_selected_items_stock():
+    """Available on-hand quantity for a list of item IDs (same rules as Inventory Stock)."""
+    from decimal import Decimal
+    from api.reports import _available_quantity_map_for_item_ids
+
+    market_id = session.get('current_market_id')
+    if not market_id:
+        return jsonify({'error': 'No market selected'}), 400
+
+    raw_ids = request.args.get('item_ids', '')
+    item_ids = []
+    for part in raw_ids.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            item_ids.append(int(part))
+        except ValueError:
+            return jsonify({'error': f'Invalid item id: {part}'}), 400
+
+    if not item_ids:
+        return jsonify({'items': [], 'totals': {'quantity': 0.0, 'weight': 0.0}})
+
+    item_ids = list(dict.fromkeys(item_ids))
+    items = Item.query.filter(Item.market_id == market_id, Item.id.in_(item_ids)).all()
+    items_by_id = {i.id: i for i in items}
+
+    supplier_ids = {i.supplier_id for i in items if i.supplier_id}
+    suppliers_by_id = {}
+    if supplier_ids:
+        suppliers = Company.query.filter(Company.id.in_(supplier_ids)).all()
+        suppliers_by_id = {s.id: s.name for s in suppliers}
+
+    avail_map = _available_quantity_map_for_item_ids(market_id, item_ids)
+
+    rows = []
+    total_qty = Decimal('0')
+    total_weight = Decimal('0')
+    for iid in item_ids:
+        item = items_by_id.get(iid)
+        if not item:
+            continue
+        avail = Decimal(str(avail_map.get(iid, 0.0)))
+        item_weight = Decimal(str(item.weight or 0))
+        row_weight = avail * item_weight
+        total_qty += avail
+        total_weight += row_weight
+        rows.append({
+            'item_id': item.id,
+            'code': item.code,
+            'name': item.name,
+            'supplier_name': suppliers_by_id.get(item.supplier_id, '—') if item.supplier_id else '—',
+            'available_quantity': float(avail),
+            'weight': float(item_weight),
+            'total_weight': float(row_weight),
+        })
+
+    return jsonify({
+        'items': rows,
+        'totals': {
+            'quantity': float(total_qty),
+            'weight': float(total_weight),
+        },
     })
 
 @app.route('/api/daily-report', methods=['GET'])

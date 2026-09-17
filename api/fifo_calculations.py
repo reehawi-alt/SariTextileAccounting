@@ -104,6 +104,8 @@ def create_inventory_batches_for_container(container_id):
 
 def allocate_sale_item_fifo(sale_item):
     """Allocate sale item to oldest inventory batches (FIFO)"""
+    if sale_item.item_id is None:
+        return Decimal('0')
     item_id = sale_item.item_id
     quantity_needed = sale_item.quantity
     sale_date = sale_item.sale.date
@@ -184,22 +186,35 @@ def calculate_profit_loss_fifo(market_id, start_date=None, end_date=None, item_i
     # Calculate profit per item
     profit_data = {}
     
+    NONCAT = '__non_catalog__'
     # Initialize with sales
     for sale_item, sale in sales:
         item_id = sale_item.item_id
-        if item_id not in profit_data:
-            profit_data[item_id] = {
-                'item_id': item_id,
-                'item_code': sale_item.item.code,
-                'item_name': sale_item.item.name,
-                'total_sales': Decimal('0'),
-                'total_cost': Decimal('0'),
-                'quantity_sold': Decimal('0'),
-                'batch_details': []  # Store batch information for each sale
-            }
+        pid = NONCAT if item_id is None else item_id
+        if pid not in profit_data:
+            if item_id is None:
+                profit_data[pid] = {
+                    'item_id': None,
+                    'item_code': '—',
+                    'item_name': 'Non-catalog (fast sell)',
+                    'total_sales': Decimal('0'),
+                    'total_cost': Decimal('0'),
+                    'quantity_sold': Decimal('0'),
+                    'batch_details': []
+                }
+            else:
+                profit_data[pid] = {
+                    'item_id': item_id,
+                    'item_code': sale_item.item.code if sale_item.item else '',
+                    'item_name': sale_item.item.name if sale_item.item else '',
+                    'total_sales': Decimal('0'),
+                    'total_cost': Decimal('0'),
+                    'quantity_sold': Decimal('0'),
+                    'batch_details': []
+                }
         
-        profit_data[item_id]['total_sales'] += sale_item.total_price
-        profit_data[item_id]['quantity_sold'] += sale_item.quantity
+        profit_data[pid]['total_sales'] += sale_item.total_price
+        profit_data[pid]['quantity_sold'] += sale_item.quantity
         
         # Get actual cost from allocations (FIFO) with batch details
         allocations = SaleItemAllocation.query.filter_by(
@@ -214,7 +229,7 @@ def calculate_profit_loss_fifo(market_id, start_date=None, end_date=None, item_i
             container = batch.container if batch else None
             batch_code = container.container_number if container else ''
             
-            profit_data[item_id]['batch_details'].append({
+            profit_data[pid]['batch_details'].append({
                 'sale_date': sale.date.isoformat(),
                 'invoice_number': sale.invoice_number,
                 'batch_code': batch_code,
@@ -225,10 +240,10 @@ def calculate_profit_loss_fifo(market_id, start_date=None, end_date=None, item_i
                 'currency': batch.currency if batch else ''
             })
         
-        profit_data[item_id]['total_cost'] += total_cost
+        profit_data[pid]['total_cost'] += total_cost
     
     # Calculate profit
-    for item_id, data in profit_data.items():
+    for _item_key, data in profit_data.items():
         data['profit'] = data['total_sales'] - data['total_cost']
         data['profit_margin'] = (data['profit'] / data['total_sales'] * 100) if data['total_sales'] > 0 else 0
         data['cog'] = float(data['total_cost'])  # COG is the total cost
@@ -560,3 +575,51 @@ def backfill_fifo_allocations(market_id):
     print(f"DEBUG backfill_fifo_allocations: Completed. Created {allocated_count} new allocations")
     return allocated_count
 
+
+def apply_supplier_return_fifo(market_id, item_id, quantity):
+    """
+    Remove returned quantity from inventory batches using LIFO (newest purchase layers first).
+    Returns a list of dicts: {'batch_id', 'quantity'} for persistence as SupplierReturnAllocation.
+    Does not commit.
+    """
+    from decimal import Decimal
+    if quantity <= 0:
+        return []
+    qty_need = Decimal(str(quantity))
+    batches = InventoryBatch.query.filter_by(
+        market_id=market_id,
+        item_id=item_id,
+    ).filter(
+        InventoryBatch.available_quantity > 0
+    ).order_by(
+        InventoryBatch.purchase_date.desc(),
+        InventoryBatch.id.desc(),
+    ).all()
+
+    remaining = qty_need
+    out = []
+    for batch in batches:
+        if remaining <= 0:
+            break
+        qavail = Decimal(str(batch.available_quantity))
+        if qavail <= 0:
+            continue
+        take = min(remaining, qavail)
+        batch.available_quantity = qavail - take
+        remaining -= take
+        out.append({'batch_id': batch.id, 'quantity': take})
+
+    if remaining > Decimal('0.0001'):
+        raise ValueError(
+            f'Insufficient stock to return item_id={item_id}: need {qty_need}, short by {remaining}'
+        )
+    return out
+
+
+def restore_supplier_return_batches(allocations):
+    """Add quantities back to batches from SupplierReturnAllocation rows. Does not commit."""
+    from decimal import Decimal
+    for alloc in allocations:
+        batch = InventoryBatch.query.get(alloc.batch_id)
+        if batch:
+            batch.available_quantity = Decimal(str(batch.available_quantity)) + Decimal(str(alloc.quantity))

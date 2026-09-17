@@ -1,15 +1,25 @@
-# Render Blueprint - Deploy with one click
+# Render Blueprint - web app + paid PostgreSQL (data survives restarts)
 # https://dashboard.render.com/select-repo?type=blueprint
 
 services:
   - type: web
     name: sari-textile-accounting
     runtime: python
-    env: python
+    plan: free
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn --timeout 300 --workers 1 app:app
     envVars:
       - key: SECRET_KEY
         generateValue: true
       - key: PYTHON_VERSION
         value: "3.11.7"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sari-textile-db
+          property: connectionString
+
+databases:
+  - name: sari-textile-db
+    plan: basic-256mb
+    diskSizeGB: 1
+    postgresMajorVersion: "16"

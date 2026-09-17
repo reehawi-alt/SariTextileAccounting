@@ -1,7 +1,9 @@
 """
 Payments API endpoints
 """
-from flask import Blueprint, request, jsonify, session, send_file
+import os
+import uuid
+from flask import Blueprint, request, jsonify, session, send_file, current_app
 from flask_login import login_required
 from models import db, Payment, Sale, Company, Market, SafeTransaction
 from decimal import Decimal
@@ -9,8 +11,110 @@ from datetime import datetime
 import pandas as pd
 from io import BytesIO
 from openpyxl.utils import get_column_letter
+from werkzeug.utils import secure_filename
 
 bp = Blueprint('payments', __name__)
+
+ALLOWED_PROOF_EXTENSIONS = {'.pdf', '.png', '.jpg', '.jpeg'}
+MAX_PROOF_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _payment_proof_root():
+    root = current_app.config.get('PAYMENT_PROOF_UPLOAD_FOLDER')
+    if not root:
+        root = os.path.join(current_app.root_path, 'uploads', 'payment_proofs')
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _payment_proof_market_dir(market_id):
+    path = os.path.join(_payment_proof_root(), str(market_id))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _proof_extension(filename):
+    if not filename or '.' not in filename:
+        return ''
+    return os.path.splitext(filename)[1].lower()
+
+
+def _is_allowed_proof_file(filename):
+    return _proof_extension(filename) in ALLOWED_PROOF_EXTENSIONS
+
+
+def _payment_proof_abs_path(payment):
+    if not payment.proof_filename:
+        return None
+    return os.path.join(_payment_proof_market_dir(payment.market_id), payment.proof_filename)
+
+
+def _delete_payment_proof_file(payment):
+    path = _payment_proof_abs_path(payment)
+    if path and os.path.isfile(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    payment.proof_filename = None
+    payment.proof_original_filename = None
+
+
+def _save_payment_proof_file(payment, file_storage):
+    if not file_storage or not file_storage.filename:
+        return None, 'No file provided'
+
+    original_name = secure_filename(file_storage.filename)
+    if not original_name:
+        return None, 'Invalid file name'
+
+    ext = _proof_extension(original_name)
+    if ext not in ALLOWED_PROOF_EXTENSIONS:
+        return None, 'Invalid file type. Allowed: PDF, PNG, JPEG'
+
+    file_storage.stream.seek(0, os.SEEK_END)
+    size = file_storage.stream.tell()
+    file_storage.stream.seek(0)
+    if size > MAX_PROOF_FILE_BYTES:
+        return None, 'File is too large. Maximum size is 10 MB'
+
+    _delete_payment_proof_file(payment)
+    stored_name = f"payment_{payment.id}_{uuid.uuid4().hex}{ext}"
+    dest_path = os.path.join(_payment_proof_market_dir(payment.market_id), stored_name)
+    file_storage.save(dest_path)
+
+    payment.proof_filename = stored_name
+    payment.proof_original_filename = original_name
+    return stored_name, None
+
+
+def _payment_proof_payload(payment):
+    return {
+        'has_proof': bool(payment.proof_filename),
+        'proof_original_filename': payment.proof_original_filename,
+    }
+
+
+def _serialize_payment(payment):
+    return {
+        'id': payment.id,
+        'company_id': payment.company_id,
+        'company_name': payment.company.name,
+        'sale_id': payment.sale_id,
+        'invoice_number': payment.sale.invoice_number if payment.sale else None,
+        'payment_type': 'In' if payment.loan else (
+            payment.payment_type if payment.payment_type in ['In', 'Out']
+            else derive_payment_type(payment.company, payment.payment_type or 'Out', is_loan=False)
+        ),
+        'loan': payment.loan,
+        'amount': float(payment.amount),
+        'currency': payment.currency,
+        'exchange_rate': float(payment.exchange_rate),
+        'amount_base_currency': float(payment.amount_base_currency),
+        'date': payment.date.isoformat(),
+        'notes': payment.notes,
+        **_payment_proof_payload(payment),
+    }
 
 
 def recalc_safe_balances(market_id):
@@ -73,21 +177,7 @@ def get_payments():
     
     payments = query.order_by(Payment.date.desc(), Payment.id.desc()).all()
     
-    return jsonify([{
-        'id': p.id,
-        'company_id': p.company_id,
-        'company_name': p.company.name,
-        'sale_id': p.sale_id,
-        'invoice_number': p.sale.invoice_number if p.sale else None,
-        'payment_type': 'In' if p.loan else (p.payment_type if p.payment_type in ['In', 'Out'] else derive_payment_type(p.company, p.payment_type or 'Out', is_loan=False)),
-        'loan': p.loan,
-        'amount': float(p.amount),
-        'currency': p.currency,
-        'exchange_rate': float(p.exchange_rate),
-        'amount_base_currency': float(p.amount_base_currency),
-        'date': p.date.isoformat(),
-        'notes': p.notes
-    } for p in payments])
+    return jsonify([_serialize_payment(p) for p in payments])
 
 @bp.route('/<int:payment_id>', methods=['GET'])
 @login_required
@@ -96,21 +186,7 @@ def get_payment(payment_id):
     payment = Payment.query.filter_by(id=payment_id, market_id=market_id).first()
     if not payment:
         return jsonify({'error': 'Payment not found'}), 404
-    return jsonify({
-        'id': payment.id,
-        'company_id': payment.company_id,
-        'company_name': payment.company.name,
-        'sale_id': payment.sale_id,
-        'invoice_number': payment.sale.invoice_number if payment.sale else None,
-        'payment_type': payment.payment_type,
-        'loan': payment.loan,
-        'amount': float(payment.amount),
-        'currency': payment.currency,
-        'exchange_rate': float(payment.exchange_rate),
-        'amount_base_currency': float(payment.amount_base_currency),
-        'date': payment.date.isoformat(),
-        'notes': payment.notes
-    })
+    return jsonify(_serialize_payment(payment))
 
 @bp.route('', methods=['POST'])
 @login_required
@@ -216,20 +292,7 @@ def create_payment():
     db.session.commit()
     recalc_safe_balances(market_id)
     
-    return jsonify({
-        'id': payment.id,
-        'company_id': payment.company_id,
-        'company_name': payment.company.name,
-        'sale_id': payment.sale_id,
-        'invoice_number': payment.sale.invoice_number if payment.sale else None,
-        'payment_type': payment.payment_type,
-        'amount': float(payment.amount),
-        'currency': payment.currency,
-        'exchange_rate': float(payment.exchange_rate),
-        'amount_base_currency': float(payment.amount_base_currency),
-        'date': payment.date.isoformat(),
-        'notes': payment.notes
-    }), 201
+    return jsonify(_serialize_payment(payment)), 201
 
 @bp.route('/<int:payment_id>', methods=['DELETE'])
 @login_required
@@ -249,6 +312,8 @@ def delete_payment(payment_id):
     
     # Delete safe transaction
     SafeTransaction.query.filter_by(payment_id=payment_id).delete()
+
+    _delete_payment_proof_file(payment)
     
     db.session.delete(payment)
     db.session.commit()
@@ -375,20 +440,68 @@ def update_payment(payment_id):
     db.session.commit()
     recalc_safe_balances(market_id)
     
-    return jsonify({
-        'id': payment.id,
-        'company_id': payment.company_id,
-        'company_name': payment.company.name,
-        'sale_id': payment.sale_id,
-        'invoice_number': payment.sale.invoice_number if payment.sale else None,
-        'payment_type': payment.payment_type,
-        'amount': float(payment.amount),
-        'currency': payment.currency,
-        'exchange_rate': float(payment.exchange_rate),
-        'amount_base_currency': float(payment.amount_base_currency),
-        'date': payment.date.isoformat(),
-        'notes': payment.notes
-    })
+    return jsonify(_serialize_payment(payment))
+
+@bp.route('/<int:payment_id>/proof', methods=['POST'])
+@login_required
+def upload_payment_proof(payment_id):
+    market_id = session.get('current_market_id')
+    payment = Payment.query.filter_by(id=payment_id, market_id=market_id).first()
+    if not payment:
+        return jsonify({'error': 'Payment not found'}), 404
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file_storage = request.files['file']
+    if not file_storage or not file_storage.filename:
+        return jsonify({'error': 'No file selected'}), 400
+
+    _, err = _save_payment_proof_file(payment, file_storage)
+    if err:
+        return jsonify({'error': err}), 400
+
+    db.session.commit()
+    return jsonify(_serialize_payment(payment))
+
+
+@bp.route('/<int:payment_id>/proof', methods=['GET'])
+@login_required
+def get_payment_proof(payment_id):
+    market_id = session.get('current_market_id')
+    payment = Payment.query.filter_by(id=payment_id, market_id=market_id).first()
+    if not payment:
+        return jsonify({'error': 'Payment not found'}), 404
+    if not payment.proof_filename:
+        return jsonify({'error': 'No proof file for this payment'}), 404
+
+    path = _payment_proof_abs_path(payment)
+    if not path or not os.path.isfile(path):
+        return jsonify({'error': 'Proof file not found on server'}), 404
+
+    ext = _proof_extension(payment.proof_original_filename or payment.proof_filename)
+    mimetype = 'application/pdf' if ext == '.pdf' else f'image/{ext.lstrip(".")}'
+    if ext == '.jpg':
+        mimetype = 'image/jpeg'
+
+    download_name = payment.proof_original_filename or payment.proof_filename
+    as_attachment = request.args.get('download', '').lower() in ('1', 'true', 'yes')
+    return send_file(path, mimetype=mimetype, as_attachment=as_attachment, download_name=download_name)
+
+
+@bp.route('/<int:payment_id>/proof', methods=['DELETE'])
+@login_required
+def delete_payment_proof(payment_id):
+    market_id = session.get('current_market_id')
+    payment = Payment.query.filter_by(id=payment_id, market_id=market_id).first()
+    if not payment:
+        return jsonify({'error': 'Payment not found'}), 404
+    if not payment.proof_filename:
+        return jsonify({'error': 'No proof file for this payment'}), 404
+
+    _delete_payment_proof_file(payment)
+    db.session.commit()
+    return jsonify(_serialize_payment(payment))
 
 @bp.route('/import', methods=['POST'])
 @login_required

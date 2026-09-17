@@ -8,6 +8,7 @@ from decimal import Decimal
 import pandas as pd
 from io import BytesIO
 from sqlalchemy import func, or_, case
+from sqlalchemy.orm import joinedload
 
 bp = Blueprint('items', __name__)
 
@@ -110,12 +111,17 @@ def get_items_summary():
         print(f"Warning: Could not load inventory adjustments: {e}")
         adjustments_map = {}
 
+    from api.reports import _returns_quantity_by_item
+    item_id_list = [i.id for i in items]
+    returns_map = _returns_quantity_by_item(market_id, item_id_list)
+
     result = []
     for i in items:
         purchases_qty = float(purchase_map.get(i.id, 0))
         sales_qty = float(sales_map.get(i.id, 0))
         adjustment_qty = adjustments_map.get(i.id, 0)
-        available = purchases_qty - sales_qty + adjustment_qty
+        ret_qty = float(returns_map.get(i.id, 0))
+        available = purchases_qty - sales_qty - ret_qty + adjustment_qty
         result.append({
             'id': i.id,
             'code': i.code,
@@ -473,19 +479,19 @@ def get_item_price_breakdown(item_id):
     if not item:
         return jsonify({'error': 'Item not found'}), 404
     
-    # Get purchase prices breakdown
-    purchase_query = db.session.query(
-        PurchaseItem.unit_price,
-        PurchaseContainer.currency,
-        func.sum(PurchaseItem.quantity).label('total_quantity'),
-        func.sum(PurchaseItem.total_price).label('total_amount')
-    ).join(
-        PurchaseContainer, PurchaseItem.container_id == PurchaseContainer.id
-    ).filter(
-        PurchaseContainer.market_id == market_id,
-        PurchaseItem.item_id == item_id
+    from api.reports import _compute_cog_for_purchase_item  # same COG rules as P&L / last purchase COG
+
+    # Purchase price breakdown: aggregate by (unit price, unit cost, currency).
+    # Unit cost = unit price + COG per unit (container currency), from container expense allocation.
+    purchase_query = (
+        db.session.query(PurchaseItem, PurchaseContainer)
+        .options(joinedload(PurchaseItem.item))
+        .join(PurchaseContainer, PurchaseItem.container_id == PurchaseContainer.id)
+        .filter(
+            PurchaseContainer.market_id == market_id,
+            PurchaseItem.item_id == item_id,
+        )
     )
-    
     if start_date:
         purchase_query = purchase_query.filter(
             PurchaseContainer.date >= datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -494,10 +500,31 @@ def get_item_price_breakdown(item_id):
         purchase_query = purchase_query.filter(
             PurchaseContainer.date <= datetime.strptime(end_date, '%Y-%m-%d').date()
         )
-    
-    purchase_prices = purchase_query.group_by(
-        PurchaseItem.unit_price, PurchaseContainer.currency
+    purchase_rows = purchase_query.order_by(
+        PurchaseContainer.date.asc(), PurchaseItem.id.asc()
     ).all()
+
+    purchase_buckets = {}
+    for pi, container in purchase_rows:
+        purchase_items = list(container.items) if container else []
+        _, cost_per_unit, _, _ = _compute_cog_for_purchase_item(
+            pi, container, purchase_items
+        )
+        up = float(pi.unit_price)
+        ucost = float(
+            cost_per_unit if isinstance(cost_per_unit, Decimal) else Decimal(str(cost_per_unit))
+        )
+        key = (up, str(container.currency), ucost)
+        if key not in purchase_buckets:
+            purchase_buckets[key] = {
+                'unit_price': up,
+                'unit_cost': ucost,
+                'currency': container.currency,
+                'total_quantity': Decimal('0'),
+                'total_amount': Decimal('0'),
+            }
+        purchase_buckets[key]['total_quantity'] += pi.quantity
+        purchase_buckets[key]['total_amount'] += pi.total_price
     
     # Get sales prices breakdown
     from models import Company
@@ -528,12 +555,16 @@ def get_item_price_breakdown(item_id):
         SaleItem.unit_price, Company.currency
     ).all()
     
-    purchase_prices_list = [{
-        'unit_price': float(price),
-        'currency': currency,
-        'total_quantity': float(qty),
-        'total_amount': float(amount)
-    } for price, currency, qty, amount in purchase_prices]
+    purchase_prices_list = [
+        {
+            'unit_price': v['unit_price'],
+            'unit_cost': v['unit_cost'],
+            'currency': v['currency'],
+            'total_quantity': float(v['total_quantity']),
+            'total_amount': float(v['total_amount']),
+        }
+        for v in purchase_buckets.values()
+    ]
     
     sales_prices_list = [{
         'unit_price': float(price),
@@ -542,8 +573,7 @@ def get_item_price_breakdown(item_id):
         'total_amount': float(amount)
     } for price, currency, qty, amount in sales_prices]
     
-    # Sort by unit price
-    purchase_prices_list.sort(key=lambda x: x['unit_price'])
+    purchase_prices_list.sort(key=lambda x: (x['unit_price'], x['unit_cost'], x['currency']))
     sales_prices_list.sort(key=lambda x: x['unit_price'])
     
     return jsonify({
@@ -691,13 +721,17 @@ def export_items():
     except Exception:
         adjustments_map = {}
     
+    from api.reports import _returns_quantity_by_item
+    returns_map = _returns_quantity_by_item(market_id, [it.id for it in items])
+    
     # Prepare Excel data
     export_rows = []
     for item in items:
         purchases_qty = float(purchase_map.get(item.id, 0))
         sales_qty = float(sales_map.get(item.id, 0))
         adjustment_qty = adjustments_map.get(item.id, 0)
-        available = purchases_qty - sales_qty + adjustment_qty
+        ret_qty = float(returns_map.get(item.id, 0))
+        available = purchases_qty - sales_qty - ret_qty + adjustment_qty
         
         export_rows.append({
             'Code': item.code,

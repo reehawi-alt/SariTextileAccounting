@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block title %}Market Notes - SARI TEXTILE WAREHOUSES ACCOUNTING{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Market Notes</h1>
+</div>
+
+<div class="sticky-notes-page-wrap">
+    <p class="sticky-notes-page-intro">
+        Sticky notes for <strong id="stickyNotesMarketName">this market</strong> — add cards, type anytime; text saves automatically. Switch market from the top bar to work on another location.
+    </p>
+
+    <div class="sticky-notes-board" id="stickyNotesBoard">
+        <button type="button" class="sticky-note-add" id="stickyNoteAddBtn" title="New note">
+            <span class="sticky-note-add-plus">+</span>
+            <span class="sticky-note-add-label">New note</span>
+        </button>
+    </div>
+    <p id="stickyNotesError" class="sticky-notes-error" style="display:none;"></p>
+</div>
+
+<script>
+(function() {
+    const board = document.getElementById('stickyNotesBoard');
+    const addBtn = document.getElementById('stickyNoteAddBtn');
+    const marketNameEl = document.getElementById('stickyNotesMarketName');
+    const errEl = document.getElementById('stickyNotesError');
+    const debounceTimers = {};
+
+    function showErr(msg) {
+        errEl.textContent = msg || '';
+        errEl.style.display = msg ? 'block' : 'none';
+    }
+
+    const TINT_CLASSES = [
+        'sticky-note--tint-0',
+        'sticky-note--tint-1',
+        'sticky-note--tint-2',
+        'sticky-note--tint-3',
+        'sticky-note--tint-4',
+        'sticky-note--tint-5'
+    ];
+
+    function scheduleSave(id, body) {
+        if (debounceTimers[id]) clearTimeout(debounceTimers[id]);
+        debounceTimers[id] = setTimeout(() => flushSave(id, body), 450);
+    }
+
+    function flushSave(id, body) {
+        fetch('/api/current-market/sticky-notes/' + id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: body })
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) showErr(data.error);
+                else showErr('');
+            })
+            .catch(() => showErr('Could not save note.'));
+    }
+
+    function cycleTint(noteId, card) {
+        fetch('/api/current-market/sticky-notes/' + noteId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tint: (parseInt(card.dataset.tint, 10) + 1) % 6 })
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) return;
+                TINT_CLASSES.forEach(c => card.classList.remove(c));
+                card.classList.add(TINT_CLASSES[data.tint] || TINT_CLASSES[0]);
+                card.dataset.tint = String(data.tint);
+            })
+            .catch(() => {});
+    }
+
+    function removeCard(noteId, card) {
+        if (!confirm('Delete this note?')) return;
+        fetch('/api/current-market/sticky-notes/' + noteId, { method: 'DELETE' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showErr(data.error);
+                    return;
+                }
+                card.remove();
+                showErr('');
+            })
+            .catch(() => showErr('Could not delete note.'));
+    }
+
+    function buildCard(note) {
+        const card = document.createElement('div');
+        card.className = 'sticky-note ' + (TINT_CLASSES[note.tint] || TINT_CLASSES[0]);
+        card.dataset.noteId = String(note.id);
+        card.dataset.tint = String(note.tint != null ? note.tint : 0);
+
+        const bar = document.createElement('div');
+        bar.className = 'sticky-note-bar';
+
+        const colorBtn = document.createElement('button');
+        colorBtn.type = 'button';
+        colorBtn.className = 'sticky-note-color';
+        colorBtn.title = 'Change color';
+        colorBtn.setAttribute('aria-label', 'Change note color');
+        colorBtn.innerHTML = '●';
+        colorBtn.addEventListener('click', () => cycleTint(note.id, card));
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'sticky-note-delete';
+        delBtn.title = 'Delete note';
+        delBtn.setAttribute('aria-label', 'Delete note');
+        delBtn.innerHTML = '×';
+        delBtn.addEventListener('click', () => removeCard(note.id, card));
+
+        bar.appendChild(colorBtn);
+        bar.appendChild(delBtn);
+
+        const ta = document.createElement('textarea');
+        ta.className = 'sticky-note-text';
+        ta.spellcheck = false;
+        ta.maxLength = 50000;
+        ta.value = note.body || '';
+        ta.placeholder = 'Type a note…';
+        ta.addEventListener('input', () => scheduleSave(note.id, ta.value));
+        ta.addEventListener('blur', () => {
+            if (debounceTimers[note.id]) {
+                clearTimeout(debounceTimers[note.id]);
+                delete debounceTimers[note.id];
+            }
+            flushSave(note.id, ta.value);
+        });
+
+        card.appendChild(bar);
+        card.appendChild(ta);
+        board.insertBefore(card, addBtn);
+    }
+
+    function loadNotes() {
+        showErr('');
+        fetch('/api/current-market/sticky-notes')
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showErr(data.error);
+                    return;
+                }
+                if (marketNameEl && data.market_name) marketNameEl.textContent = data.market_name;
+                Array.from(board.querySelectorAll('.sticky-note')).forEach(n => n.remove());
+                (data.notes || []).forEach(buildCard);
+            })
+            .catch(() => showErr('Could not load notes.'));
+    }
+
+    addBtn.addEventListener('click', () => {
+        fetch('/api/current-market/sticky-notes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: '' })
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showErr(data.error);
+                    return;
+                }
+                buildCard(data);
+                const card = board.querySelector('.sticky-note[data-note-id=\"' + data.id + '\"]');
+                if (card) {
+                    const t = card.querySelector('.sticky-note-text');
+                    if (t) t.focus();
+                }
+            })
+            .catch(() => showErr('Could not add note.'));
+    });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadNotes);
+    } else {
+        loadNotes();
+    }
+})();
+</script>
+{% endblock %}

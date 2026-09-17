@@ -24,6 +24,54 @@
         <div class="form-group">
             <button class="btn btn-secondary" onclick="clearPaymentFilters()">Clear Filters</button>
         </div>
+        <div class="form-group" id="paymentsColumnSelector" style="position: relative; margin-left: auto;">
+            <button type="button" class="btn btn-secondary" onclick="togglePaymentsColumnSelector()" style="position: relative;">
+                Columns
+                <span id="paymentsColumnSelectorBadge" style="display: none; position: absolute; top: -5px; right: -5px; background: #f44336; color: white; border-radius: 50%; width: 18px; height: 18px; font-size: 11px; line-height: 18px; text-align: center;"></span>
+            </button>
+            <div id="paymentsColumnSelectorDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 5px; background: white; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); z-index: 1000; min-width: 220px; padding: 10px;">
+                <div style="font-weight: 600; margin-bottom: 8px; color: #1e3a5f;">Show columns</div>
+                <div id="paymentsColumnCheckboxes" style="max-height: 320px; overflow-y: auto;">
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="date" checked> Date
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="company" checked> Company
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="type" checked> Type
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="amount" checked> Amount
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="currency" checked> Currency
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="amount_base" checked> Base Currency Amount
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="exchange_rate" checked> Exchange Rate
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="invoice" checked> Invoice
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="notes" checked> Notes
+                    </label>
+                    <label style="display: block; padding: 4px 0; cursor: pointer;">
+                        <input type="checkbox" class="payments-column-checkbox" data-column="actions" checked> Actions
+                    </label>
+                </div>
+                <div style="display: flex; gap: 8px; margin-top: 10px;">
+                    <button type="button" class="btn btn-secondary" onclick="selectAllPaymentsColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Select All</button>
+                    <button type="button" class="btn btn-secondary" onclick="deselectAllPaymentsColumns()" style="flex: 1; padding: 6px; font-size: 12px;">Deselect All</button>
+                </div>
+                <div style="margin-top: 8px;">
+                    <button type="button" class="btn btn-primary" onclick="applyPaymentsColumnVisibility()" style="width: 100%; padding: 8px; font-size: 13px;">Apply</button>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -31,22 +79,28 @@
     <table id="paymentsTable">
         <thead>
             <tr>
-                <th class="sortable">Date</th>
-                <th>Company</th>
-                <th>Type</th>
-                <th class="sortable">Amount</th>
-                <th>Currency</th>
-                <th class="sortable">Base Currency Amount</th>
-                <th>Exchange Rate</th>
-                <th>Invoice</th>
-                <th>Actions</th>
+                <th class="sortable" data-column="date">Date</th>
+                <th data-column="company">Company</th>
+                <th data-column="type">Type</th>
+                <th class="sortable" data-column="amount">Amount</th>
+                <th data-column="currency">Currency</th>
+                <th class="sortable" data-column="amount_base">Base Currency Amount</th>
+                <th data-column="exchange_rate">Exchange Rate</th>
+                <th data-column="invoice">Invoice</th>
+                <th data-column="notes">Notes</th>
+                <th data-column="actions">Actions</th>
             </tr>
         </thead>
         <tbody id="paymentsTableBody">
-            <tr><td colspan="9" class="empty-state">Loading...</td></tr>
+            <tr><td colspan="10" class="empty-state">Loading...</td></tr>
         </tbody>
     </table>
 </div>
+
+<input type="file"
+       id="paymentRowProofFile"
+       accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+       style="display: none;">
 
 <!-- Add/Edit Payment Modal -->
 <div id="paymentModal" class="modal">
@@ -111,6 +165,16 @@
             <div class="form-group">
                 <label>Notes</label>
                 <textarea id="paymentNotes" rows="3"></textarea>
+            </div>
+            <div class="form-group">
+                <label>Proof of Payment (PDF, PNG, JPEG)</label>
+                <input type="file" id="paymentProofFile" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg">
+                <small style="color: #666;">Optional. Max 10 MB.</small>
+                <div id="paymentProofCurrent" style="display: none; margin-top: 8px;">
+                    <span style="color: #666;">Current file: </span>
+                    <a id="paymentProofViewLink" href="#" target="_blank" rel="noopener"></a>
+                    <button type="button" class="btn btn-secondary" style="margin-left: 8px; padding: 4px 10px; font-size: 12px;" onclick="removePaymentProof()">Remove</button>
+                </div>
             </div>
             <div class="form-group">
                 <label style="display: flex; align-items: center; gap: 8px;">
